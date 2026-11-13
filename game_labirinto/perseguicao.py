@@ -1,1044 +1,560 @@
 """
 Modo Perseguição - O Guardião das Trevas.
 
-PartidaPerseguicao guarda TODOS os dados de uma partida deste modo (jogador,
-Guardião, pontos, ouro, inventário, efeitos e temporizadores). A classe Jogo
-(main.py) cria uma partida nova ao entrar no modo e a descarta (None) ao voltar
-ao menu ou ao escolher outro modo, então nada vaza para a campanha/infinito.
-
-Reaproveita do projeto: Jogador, Item, Armadilha, Labirinto.caminho_bfs,
-SistemaParticulas, Iluminacao, vinheta, fundo do HUD, menus de pausa/fim,
-fontes, cores e funções de desenho.
+ModoPerseguicao guarda TODOS os dados exclusivos deste modo (saldo, inventário,
+efeitos temporários, capturas, Guardião...). Um objeto novo é criado a cada
+partida, então nada vaza entre partidas nem para os outros modos.
+A classe Jogo (main.py) apenas chama os "ganchos" abaixo nos pontos certos.
 """
 
 import math
 import random
-from array import array
 
 import pygame
 
 from constantes import (
-    ALTURA_HUD, ALTURA_JANELA, BONUS_SEM_CAPTURA, COR_ALERTA, COR_FUNDO,
-    COR_GUARDIAO, COR_OURO, COR_SUCESSO, COR_TEXTO, COR_VIDA,
-    DISTANCIA_SANTUARIO, DIST_MIN_GUARDIAO_RESPAWN, DIST_MIN_RESPAWN,
-    DURACAO_BUSSOLA, DURACAO_ESCONDERIJO, DURACAO_INVISIBILIDADE,
-    DURACAO_LENTIDAO, DURACAO_VELOCIDADE, ESTAGIO_CACADA, ESTAGIO_FURIA,
-    ESTADO_GAME_OVER, ESTADO_JOGANDO, ESTADO_PAUSADO, ESTADO_VITORIA,
-    FATOR_LENTIDAO, FATOR_POCAO_VELOCIDADE, INTENSIDADE_TREMOR,
-    INTERVALO_BATIMENTO_ALERTA, INTERVALO_BATIMENTO_PERIGO, INTERVALO_BUSSOLA,
-    INTERVALO_POEIRA, INTERVALO_PROXIMIDADE, LARGURA_JANELA, LIMITE_BFS_TOTAL,
-    MAX_VIDAS_PERSEGUICAO, NOME_MODO_PERSEGUICAO, OURO_MOEDA, OURO_TESOURO,
-    PAREDE, PASSAGEM_SECRETA, PONTOS_FUGA, PROXIMIDADE_ALERTA,
-    PROXIMIDADE_PERIGO, RECARGA_ESCONDERIJO, SAIDA, TAMANHO_TILE,
-    TEMPO_ANIMACAO_CAPTURA, TEMPO_ATORDOADO_ARMADILHA, TEMPO_ATORDOADO_ESCUDO,
-    TEMPO_DESPERTAR_APOS_CAPTURA, TEMPO_FADE, TEMPO_FLASH_DANO,
-    TEMPO_INVULNERAVEL, TEMPO_MENSAGEM, TEMPO_TITULO_FASE, TEMPO_TREMOR,
-    TIPO_CHAVE, TIPO_MOEDA, TIPO_TESOURO, VIDAS_PERSEGUICAO,
+    ALTURA_HUD, ALTURA_JANELA, COR_ALERTA, COR_OURO, COR_SUCESSO, COR_TEXTO,
+    ESTADO_GAME_OVER, ESTADO_JOGANDO, LARGURA_JANELA,
+    TAMANHO_TILE, TEMPO_INVULNERAVEL, TEMPO_TREMOR, TEMPO_FLASH_DANO,
+    TIPO_CHAVE, VIDAS_INICIAIS,
 )
-from desenho import (
-    desenhar_coracao, desenhar_icone_chave, desenhar_icone_moeda,
-    desenhar_icone_relogio, desenhar_jogador,
+from constantes_perseguicao import (
+    AMOSTRAS_REPOSICIONAMENTO, BONUS_SEM_CAPTURA, CATALOGO, DISTANCIA_ALERTA,
+    DISTANCIA_CALMA, DISTANCIA_INTERACAO_SANTUARIO, DISTANCIA_PERIGO,
+    DISTANCIA_REAPARECER_GUARDIAO, DISTANCIA_SEGURA_JOGADOR, DURACAO_BUSSOLA,
+    DURACAO_INVISIBILIDADE, DURACAO_VELOCIDADE, FATOR_VELOCIDADE_POCAO,
+    INTERVALO_BUSSOLA, INTERVALO_PROXIMIDADE, ITEM_BUSSOLA, ITEM_CURA,
+    ITEM_ESCUDO, ITEM_INVISIBILIDADE, ITEM_VELOCIDADE, LIMITE_BFS,
+    NOME_MODO, PONTOS_ESCAPAR, ROTULO_ESTAGIO, SIMBOLO_GUARDIAO,
+    SIMBOLO_SANTUARIO, TEMPO_ATORDOADO,
 )
+from desenho import desenhar_coracao, desenhar_icone_chave, desenhar_icone_moeda
 from desenho_perseguicao import (
-    cor_proximidade, desenhar_aura_escudo, desenhar_esconderijo,
-    desenhar_icone_item, desenhar_olho_proximidade, desenhar_olhos_guardiao,
-    desenhar_santuario, desenhar_seta_bussola,
+    criar_vinheta_perigo, desenhar_aura_escudo,
+    desenhar_aura_invisivel, desenhar_aura_velocidade,
+    desenhar_icone_item, desenhar_indicador_proximidade,
+    desenhar_olhos_guardiao, desenhar_santuario, desenhar_seta_bussola,
 )
-from efeitos import criar_vinheta
-from entidades import Jogador, Labirinto
-from gerador import _distancias
-from guardiao import Guardiao
+from guardiao import GuardiaoDasTrevas
 from interface import desenhar_texto_contorno
-from loja import CATALOGO, ITENS_POR_ID, Inventario, Loja, comprar
-from mapa_perseguicao import LabirintoPerseguicao, gerar_mapa_perseguicao
+from inventario import Inventario
+from loja import Loja
 
-# Teclas de uso dos itens (1 a 5, também no teclado numérico)
-TECLAS_ITENS = {
-    pygame.K_1: "cura", pygame.K_KP1: "cura",
-    pygame.K_2: "velocidade", pygame.K_KP2: "velocidade",
-    pygame.K_3: "escudo", pygame.K_KP3: "escudo",
-    pygame.K_4: "invisibilidade", pygame.K_KP4: "invisibilidade",
-    pygame.K_5: "bussola", pygame.K_KP5: "bussola",
-}
-COR_INVISIVEL = (170, 120, 240)
-COR_ESCUDO = (120, 170, 255)
+TECLAS_ITENS = {pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2, pygame.K_4: 3, pygame.K_5: 4}
 
 
-# ----------------------------------------------------------------------
-# Sons sintetizados (opcionais: sem placa de som, o jogo segue em silêncio)
-# ----------------------------------------------------------------------
-_SONS = {}
+def formatar_tempo(segundos):
+    segundos = int(segundos)
+    return f"{segundos // 60}:{segundos % 60:02d}"
 
 
-def _sintetizar(nome):
-    """Cria o som na hora (sem arquivos). Retorna None se o áudio não estiver disponível."""
-    info = pygame.mixer.get_init()
-    if not info or info[1] != -16:
-        return None
-    frequencia, _, canais = info
-    amostras = array("h")
+class RecordesPerseguicao:
+    """Recordes DESTE modo (vivem enquanto o programa estiver aberto)."""
 
-    def tom(duracao, freq, volume, ruido=0.0, deslize=0.0):
-        total = int(frequencia * duracao)
-        fase = 0.0
-        for i in range(total):
-            progresso = i / total
-            envelope = min(1.0, progresso * 25) * (1 - progresso) ** 2
-            fase += 2 * math.pi * (freq + deslize * progresso) / frequencia
-            valor = math.sin(fase) + 0.35 * math.sin(fase * 2)
-            if ruido:
-                valor = valor * (1 - ruido) + random.uniform(-1, 1) * ruido
-            amostra = int(max(-1.0, min(1.0, valor * volume * envelope)) * 32000)
-            amostras.extend([amostra] * canais)
+    def __init__(self):
+        self.melhor_pontuacao = 0
+        self.mais_mapas = 0
+        self.maior_tempo = 0.0
 
-    def silencio(duracao):
-        amostras.extend([0] * int(frequencia * duracao) * canais)
-
-    if nome == "batimento":            # "tum-tum" grave de coração
-        tom(0.10, 58, 0.9)
-        silencio(0.09)
-        tom(0.09, 52, 0.6)
-    elif nome == "rugido":             # rosnado quando o Guardião te encontra
-        tom(0.75, 75, 0.7, ruido=0.45, deslize=-35)
-    elif nome == "compra":
-        tom(0.07, 880, 0.35)
-        tom(0.10, 1320, 0.30)
-    else:
-        return None
-    return pygame.mixer.Sound(buffer=amostras.tobytes())
+    def registrar(self, pontos, mapas, tempo):
+        self.melhor_pontuacao = max(self.melhor_pontuacao, pontos)
+        self.mais_mapas = max(self.mais_mapas, mapas)
+        self.maior_tempo = max(self.maior_tempo, tempo)
 
 
-def tocar_som(nome, volume=0.6):
-    try:
-        if nome not in _SONS:
-            _SONS[nome] = _sintetizar(nome)
-        som = _SONS[nome]
-        if som is not None:
-            som.set_volume(volume)
-            som.play()
-    except (pygame.error, ValueError, TypeError):
-        _SONS[nome] = None
-
-
-# ----------------------------------------------------------------------
-class PartidaPerseguicao:
-    """Uma partida completa do modo Perseguição."""
-
-    def __init__(self, jogo, semente=None):
-        self.jogo = jogo
-        self.nivel = gerar_mapa_perseguicao(semente)
-        self.labirinto = LabirintoPerseguicao(self.nivel["mapa"])
-        self.itens = list(self.labirinto.itens)
-        self.armadilhas = self.labirinto.armadilhas
-        # Dados da partida (isolados dos outros modos)
-        self.jogador = Jogador()
-        self.jogador.vidas = VIDAS_PERSEGUICAO
-        self.jogador.posicionar(self.labirinto.posicao_inicial)
-        self.tile_jogador = Labirinto.tile_do_ponto(self.jogador.retangulo.center)
-        self.guardiao = Guardiao(*self.labirinto.guardiao_inicial)
+class ModoPerseguicao:
+    def __init__(self, recordes):
+        self.recordes = recordes
         self.inventario = Inventario()
         self.loja = Loja()
-        self.pontos = 0
-        self.pontos_exibidos = 0.0
-        self.ouro = 0                      # saldo da loja (separado da pontuação)
-        self.ouro_ganho = 0
-        self.moedas_coletadas = 0
-        self.tesouros_coletados = 0
-        self.capturas = 0
-        self.bloqueios_escudo = 0
-        self.tem_chave = False
-        self.bonus = []                    # (descrição, pontos) mostrados na vitória
-        self.novo_recorde = False
-        # Temporizadores (todos em segundos, descontados com dt)
-        self.tempo_partida = 0.0
-        self.tempo_animacao = 0.0
-        self.efeito_velocidade = 0.0
-        self.efeito_invisivel = 0.0
-        self.efeito_bussola = 0.0
-        self.lentidao = 0.0
-        self.escondido = 0.0
-        self.esconderijo_atual = None
-        self.recargas = {pos: 0.0 for pos in self.labirinto.esconderijos}
-        self.animacao_captura = 0.0
-        self.tremor = 0.0
-        self.flash = 0.0
-        self.cor_flash = COR_VIDA
-        self.mensagem = ""
-        self.tempo_mensagem = 0.0
-        self.tempo_titulo = TEMPO_TITULO_FASE + 0.8
-        self.tempo_fade = TEMPO_FADE
-        self.tempo_poeira = 0.0
-        # Proximidade do Guardião e bússola
+        self.guardiao = None
+        self.santuarios = []                 # Rects dos santuários
+        # --- dados da partida ---
+        self.saldo = 0                       # moedas para gastar (separado da pontuação)
+        self.moedas_coletadas = 0            # total já coletado (estatística)
+        self.capturas = 0                    # total da partida
+        self.tempo_sobrevivencia = 0.0       # total da partida (não zera ao trocar de mapa)
+        self.pontos_vistos = 0               # para detectar quanto foi coletado a cada quadro
+        self.bonus_total = 0
+        self.mapas_concluidos = 0
+        # --- dados do mapa atual (zerados a cada novo mapa em preparar()) ---
+        self.tempo_mapa = 0.0
+        self.capturas_no_mapa = 0
+        # --- efeitos temporários (contados em tempo real) ---
+        self.velocidade_restante = 0.0
+        self.invisibilidade_restante = 0.0
+        self.bussola_restante = 0.0
+        self.escudo_ativo = False
+        # --- indicadores ---
         self.distancia_guardiao = None
-        self.proximidade = 0.0             # alvo (0 tranquilo ... 1 colado)
-        self.proximidade_exibida = 0.0     # valor suavizado mostrado no HUD
-        self.tempo_proximidade = 0.0
-        self.tempo_batimento = 0.0
+        self.nivel_proximidade = 0.0
+        self.espera_proximidade = 0.0
         self.angulo_bussola = None
-        self.trilha_bussola = []
-        self.tempo_calculo_bussola = 0.0
-        self.frente_porta = self._tiles_frente_porta()
-        self.vinheta_perigo = self._criar_vinheta_perigo()
-        self.superficie_fantasma = pygame.Surface((64, 64), pygame.SRCALPHA)
-
-        jogo.particulas.limpar()
-        jogo.estado = ESTADO_JOGANDO
-        jogo.tempo_fim = 0.0
-        self.mostrar_mensagem("Silêncio... o Guardião das Trevas está despertando!")
-        print(f"Perseguição: {self.nivel['nome']} (semente {self.nivel['semente']})")
+        self.espera_bussola = 0.0
+        self.perto_do_santuario = False
+        self._vinheta_perigo = None
+        self._escurecer_icone = None
 
     # ------------------------------------------------------------------
-    # auxiliares
+    # Preparação do mapa
     # ------------------------------------------------------------------
-    @staticmethod
-    def _criar_vinheta_perigo():
-        vinheta = criar_vinheta()
-        vinheta.fill((170, 0, 30, 0), special_flags=pygame.BLEND_RGBA_ADD)
-        return vinheta
-
-    @staticmethod
-    def centro_do_tile(tile):
-        coluna, linha = tile
-        return (coluna * TAMANHO_TILE + TAMANHO_TILE // 2,
-                ALTURA_HUD + linha * TAMANHO_TILE + TAMANHO_TILE // 2)
-
-    @property
-    def detectavel(self):
-        """O Guardião só detecta quem não está invisível nem escondido."""
-        return self.efeito_invisivel <= 0 and self.escondido <= 0
-
-    def mostrar_mensagem(self, texto):
-        self.mensagem = texto
-        self.tempo_mensagem = TEMPO_MENSAGEM
-
-    def _tiles_frente_porta(self):
-        porta = Labirinto.tile_do_ponto(self.labirinto.porta.center)
-        return [(porta[0] + dc, porta[1] + dl) for dc, dl in ((1, 0), (-1, 0), (0, 1), (0, -1))
-                if self.labirinto.tile_livre(porta[0] + dc, porta[1] + dl)]
-
-    def _mapa_distancias(self, tile):
+    def preparar(self, jogo):
         """
-        Distância (em passos) de 'tile' até cada tile por onde o Guardião anda.
-        Reaproveita a busca em largura do gerador (_distancias), tratando
-        porta e passagens secretas como paredes.
+        Chamado a cada mapa novo: lê o mapa, cria o Guardião (com a dificuldade do mapa)
+        e registra os santuários. Mantém vidas, moedas, pontos, inventário e efeitos.
         """
-        grade = [linha.replace(PASSAGEM_SECRETA, PAREDE).replace(SAIDA, PAREDE)
-                 for linha in self.labirinto.desenho]
-        distancias = _distancias(grade, (tile[1], tile[0]))
-        return {(coluna, linha): d for (linha, coluna), d in distancias.items()}
-
-    def _tile_seguro(self, coluna, linha):
-        """Tile onde alguém pode reaparecer: livre, sem armadilha, sem esconderijo."""
-        return self.labirinto.tile_livre(coluna, linha) \
-            and not self.labirinto.eh_perigoso(coluna, linha) \
-            and (coluna, linha) not in self.recargas
-
-    # ------------------------------------------------------------------
-    # atualização
-    # ------------------------------------------------------------------
-    def atualizar(self, dt, dt_real):
-        jogo = self.jogo
-        self._atualizar_visuais(dt, dt_real)
-        if jogo.estado != ESTADO_JOGANDO:          # telas finais: só a animação continua
-            jogo.tempo_fim += dt_real
-            return
-        if self.animacao_captura > 0:
-            self._animar_captura(dt_real)
-            return
-        self.tempo_partida += dt_real
-        self._atualizar_efeitos(dt)
-
-        # Jogador (parado enquanto escolhe na loja; o resto do jogo continua)
-        if self.loja.aberta:
-            self.jogador.invulneravel_restante = max(0.0, self.jogador.invulneravel_restante - dt)
-            self.jogador.andando = False
-        else:
-            self.jogador.fator_velocidade = self.fator_velocidade_jogador()
-            self.jogador.atualizar(dt, self.labirinto)
-            self._soltar_poeira(dt)
-        tile = Labirinto.tile_do_ponto(self.jogador.retangulo.center)
-        if self.labirinto.tile_livre(*tile):
-            self.tile_jogador = tile
-        self.coletar_itens()
-        self._verificar_esconderijos(tile, dt)
-        if self.verificar_saida():
-            return
-        for armadilha in self.armadilhas:
-            armadilha.atualizar(dt)
-        self._verificar_armadilhas()
-
-        # Guardião: continua ativo SEMPRE (inclusive com a loja aberta)
-        self.guardiao.atualizar_perseguicao(dt, self.labirinto, self.jogador, self.tempo_partida,
-                                            self.tile_jogador, self.detectavel)
-        self._tratar_eventos_guardiao()
-        self._atualizar_proximidade(dt)
-        self._atualizar_bussola(dt)
-        self.verificar_captura()
-
-    def _atualizar_visuais(self, dt, dt_real):
-        jogo = self.jogo
-        self.tempo_animacao += dt
-        jogo.particulas.atualizar(dt)
-        self.labirinto.atualizar(dt)
-        self.loja.atualizar(dt_real)
-        self.tremor = max(0.0, self.tremor - dt_real)
-        self.flash = max(0.0, self.flash - dt_real)
-        self.tempo_mensagem = max(0.0, self.tempo_mensagem - dt_real)
-        self.tempo_titulo = max(0.0, self.tempo_titulo - dt_real)
-        self.tempo_fade = max(0.0, self.tempo_fade - dt_real)
-        self.proximidade_exibida += (self.proximidade - self.proximidade_exibida) * min(1.0, dt * 5)
-        diferenca = self.pontos - self.pontos_exibidos
-        if diferenca > 0:
-            self.pontos_exibidos += min(diferenca, max(60 * dt_real, diferenca * 8 * dt_real))
-        for x, y in self.labirinto.tochas:
-            if random.random() < dt * 2.5:
-                jogo.particulas.brasa(x, y - 8)
-
-    def _atualizar_efeitos(self, dt):
-        """Efeitos temporários controlados por tempo real (dt), não por quadros."""
-        avisos = []
-        for nome, texto in (("efeito_velocidade", "A Poção da Velocidade acabou."),
-                            ("efeito_invisivel", "Você está visível de novo!"),
-                            ("efeito_bussola", "A Bússola Mágica parou de girar."),
-                            ("lentidao", None)):
-            valor = getattr(self, nome)
-            if valor > 0:
-                valor = max(0.0, valor - dt)
-                setattr(self, nome, valor)
-                if valor == 0 and texto:
-                    avisos.append(texto)
-        for posicao, restante in self.recargas.items():
-            if restante > 0 and not (posicao == self.esconderijo_atual and self.escondido > 0):
-                self.recargas[posicao] = max(0.0, restante - dt)
-        if self.efeito_bussola <= 0:
-            self.angulo_bussola = None
-            self.trilha_bussola = []
-        if avisos:
-            self.mostrar_mensagem(avisos[-1])
-
-    def fator_velocidade_jogador(self):
-        fator = 1.0
-        if self.efeito_velocidade > 0:
-            fator *= FATOR_POCAO_VELOCIDADE
-        if self.lentidao > 0:
-            fator *= FATOR_LENTIDAO
-        return fator
-
-    def _soltar_poeira(self, dt):
-        if not self.jogador.andando:
-            return
-        self.tempo_poeira -= dt
-        if self.tempo_poeira <= 0:
-            retangulo = self.jogador.retangulo
-            self.jogo.particulas.poeira(retangulo.centerx, retangulo.bottom - 2)
-            self.tempo_poeira = INTERVALO_POEIRA / (1.6 if self.efeito_velocidade > 0 else 1)
-
-    # ------------------------------------------------------------------
-    # itens, chave e saída
-    # ------------------------------------------------------------------
-    def coletar_itens(self):
-        particulas = self.jogo.particulas
-        for item in self.itens[:]:
-            if not self.jogador.retangulo.colliderect(item.retangulo):
-                continue
-            self.itens.remove(item)
-            x, y = item.retangulo.center
-            self.pontos += item.pontos
-            if item.tipo == TIPO_CHAVE:
-                self.tem_chave = True
-                self.labirinto.abrir_porta()
-                particulas.explosao(x, y, [COR_OURO, (255, 245, 170)], 22, 140, 0.8)
-                particulas.texto(x, y - 10, "CHAVE!", COR_OURO)
-                self.mostrar_mensagem("Chave encontrada! A porta de saída foi destrancada.")
-                continue
-            ouro = OURO_MOEDA if item.tipo == TIPO_MOEDA else OURO_TESOURO
-            self.ouro += ouro                       # saldo atualizado na hora
-            self.ouro_ganho += ouro
-            if item.tipo == TIPO_MOEDA:
-                self.moedas_coletadas += 1
-            elif item.tipo == TIPO_TESOURO:
-                self.tesouros_coletados += 1
-            particulas.explosao(x, y, [COR_OURO, (255, 240, 150), (200, 150, 30)],
-                                10 if item.tipo == TIPO_MOEDA else 20)
-            particulas.texto(x, y - 10, f"+{item.pontos}", COR_OURO)
-
-    def verificar_saida(self):
-        """True se o jogador escapou (vitória)."""
-        if not self.jogador.retangulo.inflate(4, 4).colliderect(self.labirinto.porta):
-            return False
-        if not self.labirinto.porta_aberta:
-            aviso = "A porta está trancada! Encontre a chave primeiro."
-            if self.mensagem != aviso or self.tempo_mensagem <= 0.5:
-                self.mostrar_mensagem(aviso)
-            return False
-        self._vencer()
-        return True
-
-    def _vencer(self):
-        self.bonus = [("Fuga da masmorra", PONTOS_FUGA)]
-        if self.capturas == 0:
-            self.bonus.append(("Fuga sem captura", BONUS_SEM_CAPTURA))
-        self.pontos += sum(p for _, p in self.bonus)
-        x, y = self.labirinto.porta.center
-        self.jogo.particulas.explosao(x, y, [COR_SUCESSO, (200, 255, 200), COR_OURO], 30, 150, 0.9)
-        self._finalizar(ESTADO_VITORIA)
-
-    def _finalizar(self, estado):
-        jogo = self.jogo
+        self.santuarios = []
+        self.tempo_mapa = 0.0
+        self.capturas_no_mapa = 0
+        self.distancia_guardiao = None
+        self.nivel_proximidade = 0.0
+        self.espera_proximidade = 0.0
+        self.angulo_bussola = None
+        self.espera_bussola = 0.0
+        self.perto_do_santuario = False
         self.loja.fechar()
-        self.novo_recorde = self.pontos > jogo.recorde_perseguicao
-        jogo.recorde_perseguicao = max(jogo.recorde_perseguicao, self.pontos)
-        jogo.estado = estado
-        jogo.tempo_fim = 0.0
+        for linha, texto in enumerate(jogo.nivel["mapa"]):
+            for coluna, simbolo in enumerate(texto):
+                if simbolo == SIMBOLO_GUARDIAO:
+                    self.guardiao = GuardiaoDasTrevas(coluna, linha)
+                    dificuldade = jogo.nivel["guardiao"]
+                    self.guardiao.fator_mapa = dificuldade["fator_velocidade"]
+                    self.guardiao.raio_deteccao = dificuldade["raio_deteccao"]
+                    self.guardiao.tempo_furia = dificuldade["tempo_furia"]
+                elif simbolo == SIMBOLO_SANTUARIO:
+                    self.santuarios.append(pygame.Rect(
+                        coluna * TAMANHO_TILE, ALTURA_HUD + linha * TAMANHO_TILE,
+                        TAMANHO_TILE, TAMANHO_TILE))
+        self.pontos_vistos = jogo.pontos
 
     # ------------------------------------------------------------------
-    # elementos especiais
+    # Atualização (chamada todo quadro enquanto se joga)
     # ------------------------------------------------------------------
-    def _verificar_esconderijos(self, tile, dt):
-        posicao = tile if tile in self.recargas else None
-        if posicao != self.esconderijo_atual:
-            anterior = self.esconderijo_atual
-            if anterior is not None and self.escondido > 0:
-                self.escondido = 0.0
-                self.recargas[anterior] = RECARGA_ESCONDERIJO
-                self.mostrar_mensagem("Você saiu do esconderijo.")
-            self.esconderijo_atual = posicao
-            if posicao is not None:
-                if self.recargas[posicao] <= 0:
-                    self.escondido = DURACAO_ESCONDERIJO
-                    x, y = self.centro_do_tile(posicao)
-                    self.jogo.particulas.explosao(x, y, [(120, 78, 40), (90, 70, 50)], 10, 70)
-                    self.mostrar_mensagem(f"Escondido! O Guardião perde seu rastro "
-                                          f"({DURACAO_ESCONDERIJO:g} s).")
-                else:
-                    self.mostrar_mensagem("Este esconderijo ainda não é seguro.")
-        elif posicao is not None and self.escondido > 0:
-            self.escondido = max(0.0, self.escondido - dt)
-            if self.escondido == 0:
-                self.recargas[posicao] = RECARGA_ESCONDERIJO
-                self.mostrar_mensagem("O esconderijo deixou de ser seguro. Corra!")
+    def atualizar(self, jogo, dt, dt_real):
+        self.tempo_sobrevivencia += dt_real
+        self.tempo_mapa += dt_real
 
-    def _verificar_armadilhas(self):
-        """Espinhos: deixam o jogador lento e atrasam (atordoam) o Guardião."""
-        particulas = self.jogo.particulas
-        for armadilha in self.armadilhas:
-            if armadilha.estado != "ativa":
-                continue
-            area = armadilha.area_dano
-            if self.lentidao <= 0 and not self.jogador.invulneravel and self.escondido <= 0 \
-                    and area.colliderect(self.jogador.hitbox):
-                self.lentidao = DURACAO_LENTIDAO
-                self.tremor = TEMPO_TREMOR * 0.6
-                self.flash, self.cor_flash = TEMPO_FLASH_DANO * 0.6, COR_VIDA
-                x, y = self.jogador.retangulo.center
-                particulas.explosao(x, y, [COR_VIDA, (255, 130, 130)], 12, 110)
-                self.mostrar_mensagem("Espinhos! Você ficou mais lento por alguns segundos.")
-            if area.colliderect(self.guardiao.hitbox) and \
-                    self.guardiao.pisou_em_armadilha(TEMPO_ATORDOADO_ARMADILHA):
-                x, y = self.guardiao.retangulo.center
-                particulas.explosao(x, y, [COR_GUARDIAO, (200, 200, 220)], 14, 120)
-                particulas.texto(x, y - 24, "ATRASADO!", COR_SUCESSO)
+        # saldo de moedas = valor dos itens coletados (a pontuação fica intacta)
+        ganho = jogo.pontos - self.pontos_vistos
+        if ganho > 0:
+            self.saldo += ganho
+            self.moedas_coletadas += ganho
+        self.pontos_vistos = jogo.pontos
 
-    def santuario_proximo(self):
-        """Santuário ao alcance do jogador (ou None)."""
-        cx, cy = self.jogador.retangulo.center
-        for tile in self.labirinto.santuarios:
-            sx, sy = self.centro_do_tile(tile)
-            if math.hypot(sx - cx, sy - cy) <= DISTANCIA_SANTUARIO:
-                return tile
-        return None
+        # efeitos temporários (tempo real, não dependem do FPS)
+        self.velocidade_restante = max(0.0, self.velocidade_restante - dt_real)
+        self.invisibilidade_restante = max(0.0, self.invisibilidade_restante - dt_real)
+        self.bussola_restante = max(0.0, self.bussola_restante - dt_real)
+        jogo.jogador.fator_velocidade = (FATOR_VELOCIDADE_POCAO
+                                         if self.velocidade_restante > 0 else 1.0)
+        jogo.jogador.bloqueado = self.loja.aberta     # com a loja aberta o jogador fica parado
 
-    # ------------------------------------------------------------------
-    # Guardião: eventos, proximidade, captura
-    # ------------------------------------------------------------------
-    def _tratar_eventos_guardiao(self):
-        x, y = self.guardiao.retangulo.center
-        particulas = self.jogo.particulas
-        for evento in self.guardiao.eventos:
-            if evento == "despertou":
-                particulas.explosao(x, y, [COR_GUARDIAO, (40, 20, 60)], 18, 90)
-                if self.tempo_partida < 10:
-                    self.mostrar_mensagem("O Guardião das Trevas despertou e está te procurando...")
-            elif evento == "detectou":
-                particulas.texto(x, y - 30, "GRRRR!", COR_ALERTA)
-                self.mostrar_mensagem("CAÇADA! O Guardião te encontrou. Fuja!")
-                tocar_som("rugido", 0.5)
-            elif evento == "perdeu":
-                particulas.texto(x, y - 30, "?", (200, 180, 255))
-                self.mostrar_mensagem("O Guardião perdeu seu rastro... por enquanto.")
-            elif evento == "furia":
-                particulas.explosao(x, y, [(255, 80, 30), (255, 190, 60)], 30, 160, 0.9)
-                self.tremor = TEMPO_TREMOR
-                self.mostrar_mensagem("FÚRIA! O Guardião está muito mais rápido!")
-                tocar_som("rugido", 0.8)
+        # Guardião (continua ativo mesmo com a loja aberta)
+        guardiao = self.guardiao
+        guardiao.tempo = self.tempo_mapa          # a progressão por tempo recomeça a cada mapa
+        guardiao.jogador_visivel = self.invisibilidade_restante <= 0
+        guardiao.atualizar(dt, jogo.labirinto, jogo.jogador)
 
-    def _atualizar_proximidade(self, dt):
-        """Distância REAL pelos corredores (BFS existente), em intervalos controlados."""
-        self.tempo_proximidade -= dt
-        if self.tempo_proximidade <= 0:
-            self.tempo_proximidade = INTERVALO_PROXIMIDADE
-            caminho = self.labirinto.caminho_bfs(self.guardiao.tile, self.tile_jogador,
-                                                 PROXIMIDADE_ALERTA)
+        self._atualizar_proximidade(jogo, dt, dt_real)
+        self._atualizar_santuario(jogo)
+        self._atualizar_bussola(jogo, dt_real)
+        self.loja.atualizar(dt_real)
+        self._verificar_captura(jogo)
+
+    def _atualizar_proximidade(self, jogo, dt, dt_real):
+        """Mede a distância (em tiles de caminho) a cada INTERVALO_PROXIMIDADE segundos."""
+        self.espera_proximidade -= dt_real
+        if self.espera_proximidade <= 0:
+            self.espera_proximidade = INTERVALO_PROXIMIDADE
+            labirinto = jogo.labirinto
+            origem = (self.guardiao.coluna, self.guardiao.linha)
+            alvo = labirinto.tile_do_ponto(jogo.jogador.retangulo.center)
+            caminho = labirinto.caminho_bfs(origem, alvo, DISTANCIA_CALMA)
             self.distancia_guardiao = None if caminho is None else len(caminho)
-            if self.distancia_guardiao is None:
-                self.proximidade = 0.0
-            else:
-                self.proximidade = max(0.0, min(1.0, (PROXIMIDADE_ALERTA - self.distancia_guardiao)
-                                                / (PROXIMIDADE_ALERTA - 1)))
-        # batimento cardíaco cada vez mais rápido
-        distancia = self.distancia_guardiao
-        if distancia is not None and distancia < PROXIMIDADE_ALERTA and self.guardiao.dormindo <= 0:
-            self.tempo_batimento -= dt
-            if self.tempo_batimento <= 0:
-                perigo = distancia < PROXIMIDADE_PERIGO
-                self.tempo_batimento = INTERVALO_BATIMENTO_PERIGO if perigo \
-                    else INTERVALO_BATIMENTO_ALERTA
-                tocar_som("batimento", 0.9 if perigo else 0.5)
+        d = self.distancia_guardiao
+        if d is None:
+            alvo_nivel = 0.0
+        elif d <= DISTANCIA_PERIGO:
+            alvo_nivel = 1.0
         else:
-            self.tempo_batimento = 0.0
+            alvo_nivel = max(0.0, 1.0 - (d - DISTANCIA_PERIGO) / (DISTANCIA_CALMA - DISTANCIA_PERIGO))
+        self.nivel_proximidade += (alvo_nivel - self.nivel_proximidade) * min(1.0, dt_real * 6)
 
-    @property
     def rotulo_proximidade(self):
         d = self.distancia_guardiao
-        if d is None or d >= PROXIMIDADE_ALERTA:
-            return "Tranquilo"
-        if d >= PROXIMIDADE_PERIGO:
-            return "Alerta"
-        return "PERIGO!"
+        if d is not None and d <= DISTANCIA_PERIGO:
+            return "PERIGO!", COR_ALERTA
+        if d is not None and d <= DISTANCIA_ALERTA:
+            return "ALERTA", COR_OURO
+        return "Tranquilo", COR_SUCESSO
 
-    def verificar_captura(self):
-        guardiao, jogador = self.guardiao, self.jogador
-        if not guardiao.ativo or jogador.invulneravel or self.escondido > 0:
+    def _atualizar_santuario(self, jogo):
+        """Descobre se o jogador está perto de um santuário; fecha a loja se ele se afastou."""
+        zona = jogo.jogador.retangulo.inflate(DISTANCIA_INTERACAO_SANTUARIO * 2,
+                                              DISTANCIA_INTERACAO_SANTUARIO * 2)
+        self.perto_do_santuario = any(zona.colliderect(s) for s in self.santuarios)
+        if self.loja.aberta and not self.perto_do_santuario:
+            self.loja.fechar()
+
+    def _alvo_da_bussola(self, jogo):
+        """Tile da chave (se ainda não pegou) ou do corredor junto à porta."""
+        labirinto = jogo.labirinto
+        if jogo.chaves_coletadas < jogo.chaves_necessarias:
+            for item in jogo.itens:
+                if item.tipo == TIPO_CHAVE:
+                    return labirinto.tile_do_ponto(item.retangulo.center)
+        coluna, linha = labirinto.tile_do_ponto(labirinto.porta.center)
+        for d_coluna, d_linha in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            if labirinto.tile_livre(coluna + d_coluna, linha + d_linha):
+                return (coluna + d_coluna, linha + d_linha)
+        return (coluna, linha)
+
+    def _atualizar_bussola(self, jogo, dt_real):
+        if self.bussola_restante <= 0:
+            self.angulo_bussola = None
+            return
+        self.espera_bussola -= dt_real
+        if self.espera_bussola > 0:
+            return
+        self.espera_bussola = INTERVALO_BUSSOLA
+        labirinto = jogo.labirinto
+        origem = labirinto.tile_do_ponto(jogo.jogador.retangulo.center)
+        alvo = self._alvo_da_bussola(jogo)
+        caminho = labirinto.caminho_bfs(origem, alvo, LIMITE_BFS)
+        px, py = jogo.jogador.retangulo.center
+        if caminho:
+            proximo = caminho[0]
+            destino = (proximo[0] * TAMANHO_TILE + TAMANHO_TILE // 2,
+                       ALTURA_HUD + proximo[1] * TAMANHO_TILE + TAMANHO_TILE // 2)
+        else:
+            destino = (alvo[0] * TAMANHO_TILE + TAMANHO_TILE // 2,
+                       ALTURA_HUD + alvo[1] * TAMANHO_TILE + TAMANHO_TILE // 2)
+        self.angulo_bussola = math.atan2(destino[1] - py, destino[0] - px)
+
+    # ------------------------------------------------------------------
+    # Captura, escudo e reposicionamento
+    # ------------------------------------------------------------------
+    def _verificar_captura(self, jogo):
+        jogador = jogo.jogador
+        guardiao = self.guardiao
+        if jogador.invulneravel or guardiao.atordoado > 0:
             return
         if not guardiao.hitbox.colliderect(jogador.hitbox):
             return
-        x, y = jogador.retangulo.center
-        particulas = self.jogo.particulas
-        if self.inventario.consumir("escudo"):
-            # O escudo bloqueia esta captura e é consumido (proteção NÃO permanente)
-            self.bloqueios_escudo += 1
-            jogador.invulneravel_restante = TEMPO_INVULNERAVEL
-            self._repelir_guardiao()
-            self.flash, self.cor_flash = TEMPO_FLASH_DANO, COR_ESCUDO
-            particulas.explosao(x, y, [COR_ESCUDO, (220, 235, 255), COR_OURO], 26, 160, 0.7)
-            particulas.texto(x, y - 18, "BLOQUEADO!", COR_ESCUDO)
-            self.mostrar_mensagem("O Escudo Mágico bloqueou a captura e se desfez!")
-            return
-        # Captura: perde uma vida (já ativa a invulnerabilidade existente) e anima
+        # o escudo ativo (ou um da bolsa, usado automaticamente) bloqueia a captura
+        if self.escudo_ativo or self.inventario.consumir(ITEM_ESCUDO):
+            self.escudo_ativo = False
+            self._bloquear_com_escudo(jogo)
+        else:
+            self._capturar(jogo)
+
+    def _bloquear_com_escudo(self, jogo):
+        """O escudo se desfaz; o jogador ganha um instante de proteção e o Guardião fica atordoado."""
+        jogo.jogador.invulneravel_restante = TEMPO_INVULNERAVEL
+        self.guardiao.atordoado = TEMPO_ATORDOADO
+        x, y = jogo.jogador.retangulo.center
+        jogo.particulas.explosao(x, y, [(120, 180, 255), (200, 230, 255), (70, 110, 220)], 22, 150)
+        jogo.particulas.texto(x, y - 24, "ESCUDO!", (150, 200, 255))
+        jogo.tremor = TEMPO_TREMOR / 2
+        jogo.mostrar_mensagem("O escudo bloqueou o Guardião!")
+
+    def _capturar(self, jogo):
+        """O Guardião pegou o jogador: perde uma vida e a perseguição recomeça longe dali."""
         self.capturas += 1
+        self.capturas_no_mapa += 1
+        jogo.jogador.perder_vida()                   # também ativa a invulnerabilidade
+        jogo.tremor = TEMPO_TREMOR
+        jogo.flash_dano = TEMPO_FLASH_DANO
+        x, y = jogo.jogador.retangulo.center
+        jogo.particulas.explosao(x, y, [(96, 36, 160), (30, 10, 50), (200, 80, 255), (180, 30, 50)],
+                                 26, 150, 0.7)
         self.loja.fechar()
-        jogador.perder_vida()
-        jogador.andando = False
-        self.animacao_captura = TEMPO_ANIMACAO_CAPTURA
-        self.tremor = TEMPO_TREMOR
-        self.flash, self.cor_flash = TEMPO_FLASH_DANO * 1.5, (90, 20, 140)
-        particulas.explosao(x, y, [(40, 10, 60), COR_GUARDIAO, (10, 5, 15)], 34, 150, 0.9)
-        self.mostrar_mensagem("Capturado pelo Guardião! Você perdeu uma vida.")
-        tocar_som("rugido", 0.9)
-
-    def _repelir_guardiao(self):
-        """O escudo empurra o Guardião alguns tiles para trás e o deixa atordoado."""
-        guardiao = self.guardiao
-        distancias = self._mapa_distancias(self.tile_jogador)
-        opcoes = [t for t, d in distancias.items() if 3 <= d <= 5 and self._tile_seguro(*t)]
-        if opcoes:
-            gx, gy = guardiao.tile
-            destino = min(opcoes, key=lambda t: abs(t[0] - gx) + abs(t[1] - gy))
-            x, y = guardiao.retangulo.center
-            self.jogo.particulas.explosao(x, y, [COR_ESCUDO, COR_GUARDIAO], 16, 120)
-            guardiao.teleportar(*destino)
-        guardiao.atordoar(TEMPO_ATORDOADO_ESCUDO)
-
-    def _animar_captura(self, dt_real):
-        self.animacao_captura -= dt_real
-        if random.random() < 0.6:
-            x, y = self.jogador.retangulo.center
-            self.jogo.particulas.explosao(x, y, [(30, 10, 45), COR_GUARDIAO], 2, 60, 0.5)
-        if self.animacao_captura > 0:
+        if jogo.jogador.vidas <= 0:
+            jogo.estado = ESTADO_GAME_OVER
+            jogo.tempo_fim = 0.0
+            self.recordes.registrar(jogo.pontos, self.mapas_concluidos, self.tempo_sobrevivencia)
             return
-        self.animacao_captura = 0.0
-        if self.jogador.vidas <= 0:
-            self._finalizar(ESTADO_GAME_OVER)
-        else:
-            self.reposicionar_apos_captura()
+        jogo.mostrar_mensagem("O Guardião das Trevas te capturou!")
+        self._reposicionar(jogo)
 
-    def reposicionar_apos_captura(self):
-        """Jogador num ponto seguro longe do Guardião; Guardião numa região distante."""
-        dist_guardiao = self._mapa_distancias(self.guardiao.tile)
-        seguros = [t for t in dist_guardiao if self._tile_seguro(*t)]
-        inicio = Labirinto.tile_do_ponto(
-            (self.labirinto.posicao_inicial[0] + 1, self.labirinto.posicao_inicial[1] + 1))
-        if dist_guardiao.get(inicio, 0) >= DIST_MIN_RESPAWN:
-            destino_jogador = inicio
-        else:
-            candidatos = [t for t in seguros if dist_guardiao[t] >= DIST_MIN_RESPAWN]
-            if not candidatos:
-                candidatos = sorted(seguros, key=lambda t: -dist_guardiao[t])[:5]
-            candidatos.sort(key=lambda t: -dist_guardiao[t])
-            destino_jogador = random.choice(candidatos[:max(1, len(candidatos) // 3)])
-        coluna, linha = destino_jogador
-        self.jogador.posicionar((coluna * TAMANHO_TILE, ALTURA_HUD + linha * TAMANHO_TILE))
-        self.tile_jogador = destino_jogador
+    def _distancia(self, labirinto, origem, destino):
+        caminho = labirinto.caminho_bfs(origem, destino, LIMITE_BFS)
+        return None if caminho is None else len(caminho)
 
-        dist_jogador = self._mapa_distancias(destino_jogador)
-        candidatos = [t for t in dist_jogador if self._tile_seguro(*t)
-                      and dist_jogador[t] >= DIST_MIN_GUARDIAO_RESPAWN]
-        if not candidatos:
-            candidatos = sorted((t for t in dist_jogador if self._tile_seguro(*t)),
-                                key=lambda t: -dist_jogador[t])[:5]
-        candidatos.sort(key=lambda t: -dist_jogador[t])
-        destino_guardiao = random.choice(candidatos[:max(1, len(candidatos) // 2)])
-        self.guardiao.teleportar(*destino_guardiao, tempo_dormir=TEMPO_DESPERTAR_APOS_CAPTURA)
-        self.distancia_guardiao = None
-        self.tempo_proximidade = 0.0
-        x, y = self.jogador.retangulo.center
-        self.jogo.particulas.explosao(x, y, [(200, 200, 255), COR_TEXTO], 16, 100)
-        self.mostrar_mensagem(f"Você escapou das garras! Restam {self.jogador.vidas} vida(s).")
+    def _tiles_validos(self, jogo):
+        """Tiles livres, sem armadilha: candidatos a reposicionamento."""
+        labirinto = jogo.labirinto
+        armadilhas = {labirinto.tile_do_ponto(a.retangulo.center) for a in jogo.armadilhas}
+        return [(coluna, linha)
+                for linha, texto in enumerate(labirinto.desenho)
+                for coluna in range(len(texto))
+                if labirinto.tile_livre(coluna, linha) and (coluna, linha) not in armadilhas]
+
+    def _escolher_distante(self, labirinto, origem, candidatos, minimo):
+        """Sorteia um tile a pelo menos 'minimo' passos de 'origem' (ou o mais distante achado)."""
+        amostra = random.sample(candidatos, min(AMOSTRAS_REPOSICIONAMENTO, len(candidatos)))
+        medidos = []
+        for tile in amostra:
+            distancia = self._distancia(labirinto, origem, tile)
+            if distancia is not None:
+                medidos.append((distancia, tile))
+        bons = [tile for distancia, tile in medidos if distancia >= minimo]
+        if bons:
+            return random.choice(bons)
+        return max(medidos)[1] if medidos else origem
+
+    def _reposicionar(self, jogo):
+        """Jogador num ponto seguro e longe do Guardião; depois o Guardião, longe do jogador."""
+        labirinto = jogo.labirinto
+        validos = self._tiles_validos(jogo)
+        origem_guardiao = (self.guardiao.coluna, self.guardiao.linha)
+        ponto_jogador = self._escolher_distante(labirinto, origem_guardiao, validos,
+                                                DISTANCIA_SEGURA_JOGADOR)
+        jogo.jogador.posicionar((ponto_jogador[0] * TAMANHO_TILE,
+                                 ALTURA_HUD + ponto_jogador[1] * TAMANHO_TILE))
+        ponto_guardiao = self._escolher_distante(labirinto, ponto_jogador, validos,
+                                                 DISTANCIA_REAPARECER_GUARDIAO)
+        self.guardiao.posicionar(*ponto_guardiao)
 
     # ------------------------------------------------------------------
-    # bússola
+    # Loja e inventário
     # ------------------------------------------------------------------
-    def alvo_bussola(self):
-        """Tile da chave (se ainda não foi pega) ou da frente da porta."""
-        for item in self.itens:
-            if item.tipo == TIPO_CHAVE:
-                return Labirinto.tile_do_ponto(item.retangulo.center)
-        return self.frente_porta[0] if self.frente_porta else None
-
-    def _atualizar_bussola(self, dt):
-        if self.efeito_bussola <= 0:
-            return
-        self.tempo_calculo_bussola -= dt
-        if self.tempo_calculo_bussola > 0:
-            return
-        self.tempo_calculo_bussola = INTERVALO_BUSSOLA
-        alvo = self.alvo_bussola()
-        if alvo is None:
-            return
-        caminho = self.labirinto.caminho_bfs(self.tile_jogador, alvo, LIMITE_BFS_TOTAL)
-        if caminho:
-            self.trilha_bussola = caminho[:6]
-            referencia = self.centro_do_tile(caminho[min(2, len(caminho) - 1)])
-        else:
-            self.trilha_bussola = []
-            referencia = self.centro_do_tile(alvo)
-        cx, cy = self.jogador.retangulo.center
-        if (referencia[0], referencia[1]) != (cx, cy):
-            self.angulo_bussola = math.atan2(referencia[1] - cy, referencia[0] - cx)
-
-    # ------------------------------------------------------------------
-    # inventário e loja
-    # ------------------------------------------------------------------
-    def usar_item(self, identificador):
-        """Usa um item do inventário. Retorna True se ele foi consumido."""
-        nome = ITENS_POR_ID[identificador]["nome"]
-        if self.inventario.quantidade(identificador) <= 0:
-            self.mostrar_mensagem(f"Você não tem {nome}. Compre no Santuário.")
+    def comprar(self, jogo, indice):
+        """Compra o item 'indice' do catálogo. Retorna True se a compra foi feita."""
+        item = CATALOGO[indice]
+        if self.saldo < item["preco"]:
+            self.loja.avisar("Moedas insuficientes!", erro=True)
             return False
-        x, y = self.jogador.retangulo.center
-        particulas = self.jogo.particulas
-        if identificador == "cura":
-            if self.jogador.vidas >= MAX_VIDAS_PERSEGUICAO:
-                self.mostrar_mensagem("Suas vidas já estão no máximo.")
-                return False
-            self.inventario.consumir("cura")
-            self.jogador.vidas += 1
-            particulas.explosao(x, y, [COR_VIDA, (255, 160, 170)], 18, 100)
-            particulas.texto(x, y - 18, "+1 VIDA", COR_VIDA)
-            self.mostrar_mensagem("Poção de Cura: você recuperou uma vida.")
-        elif identificador == "escudo":
-            self.mostrar_mensagem(f"O Escudo Mágico protege sozinho na próxima captura "
-                                  f"(você tem {self.inventario.quantidade('escudo')}).")
+        if self.inventario.cheio(item["id"]):
+            self.loja.avisar("Você já carrega o máximo desse item.", erro=True)
             return False
-        else:
-            atributo, duracao, cor, texto = {
-                "velocidade": ("efeito_velocidade", DURACAO_VELOCIDADE, (230, 200, 40),
-                               "Poção da Velocidade! Corra!"),
-                "invisibilidade": ("efeito_invisivel", DURACAO_INVISIBILIDADE, COR_INVISIVEL,
-                                   "Invisível! O Guardião não consegue te detectar."),
-                "bussola": ("efeito_bussola", DURACAO_BUSSOLA, COR_OURO,
-                            "A Bússola Mágica aponta o caminho."),
-            }[identificador]
-            if getattr(self, atributo) > 0:
-                self.mostrar_mensagem(f"{nome} ainda está fazendo efeito.")
-                return False
-            self.inventario.consumir(identificador)
-            setattr(self, atributo, duracao)
-            if identificador == "bussola":
-                self.tempo_calculo_bussola = 0.0
-                self._atualizar_bussola(0.0)
-            particulas.explosao(x, y, [cor, (255, 255, 255)], 16, 100)
-            self.mostrar_mensagem(texto)
+        self.saldo -= item["preco"]                   # saldo atualizado na hora
+        self.inventario.adicionar(item["id"])
+        self.loja.avisar(f"Comprou: {item['nome']}")
+        x, y = jogo.jogador.retangulo.center
+        jogo.particulas.explosao(x, y, [COR_OURO, (255, 240, 150)], 10, 90, 0.5)
         return True
 
-    def comprar_selecionado(self):
-        acao = self.loja.acao_selecionada()
-        if acao == "fechar":
-            self.loja.fechar()
-            return
-        self.ouro, sucesso, mensagem = comprar(acao, self.ouro, self.inventario)
-        self.loja.avisar(mensagem, sucesso)
-        if sucesso:
-            tocar_som("compra", 0.4)
-            x, y = self.jogador.retangulo.center
-            self.jogo.particulas.explosao(x, y, [COR_OURO, (255, 250, 200)], 14, 90)
+    def usar_item(self, jogo, item_id):
+        """Usa um item do inventário (só se existir e se fizer sentido usá-lo agora)."""
+        nome = next(i["nome"] for i in CATALOGO if i["id"] == item_id)
+        if not self.inventario.tem(item_id):
+            jogo.mostrar_mensagem(f"Você não tem: {nome}.")
+            return False
+        x, y = jogo.jogador.retangulo.center
+        if item_id == ITEM_CURA:
+            if jogo.jogador.vidas >= VIDAS_INICIAIS:
+                jogo.mostrar_mensagem("Suas vidas já estão completas.")
+                return False
+            jogo.jogador.vidas += 1
+            jogo.particulas.explosao(x, y, [(255, 120, 130), (255, 220, 220)], 16, 100)
+            jogo.particulas.texto(x, y - 20, "+1 VIDA", (255, 120, 130))
+        elif item_id == ITEM_VELOCIDADE:
+            if self.velocidade_restante > 0:
+                jogo.mostrar_mensagem("A poção da velocidade já está ativa.")
+                return False
+            self.velocidade_restante = DURACAO_VELOCIDADE
+            jogo.particulas.texto(x, y - 20, "VELOZ!", (255, 235, 110))
+        elif item_id == ITEM_ESCUDO:
+            if self.escudo_ativo:
+                jogo.mostrar_mensagem("O escudo já está ativo.")
+                return False
+            self.escudo_ativo = True
+            jogo.particulas.texto(x, y - 20, "ESCUDO", (150, 200, 255))
+        elif item_id == ITEM_INVISIBILIDADE:
+            if self.invisibilidade_restante > 0:
+                jogo.mostrar_mensagem("Você já está invisível.")
+                return False
+            self.invisibilidade_restante = DURACAO_INVISIBILIDADE
+            jogo.particulas.texto(x, y - 20, "INVISÍVEL", (210, 225, 255))
+        elif item_id == ITEM_BUSSOLA:
+            if self.bussola_restante > 0:
+                jogo.mostrar_mensagem("A bússola já está ativa.")
+                return False
+            self.bussola_restante = DURACAO_BUSSOLA
+            self.espera_bussola = 0.0
+        self.inventario.consumir(item_id)
+        return True
 
-    def alternar_loja(self):
+    # ------------------------------------------------------------------
+    # Fim de partida
+    # ------------------------------------------------------------------
+    def ao_escapar(self, jogo):
+        """
+        O jogador atravessou a porta: conta o mapa, soma os bônus e registra os recordes.
+        O próximo mapa é gerado pelo Jogo; tudo o que é do jogador continua com ele.
+        """
+        self.mapas_concluidos += 1
+        bonus = PONTOS_ESCAPAR
+        if self.capturas_no_mapa == 0:
+            bonus += BONUS_SEM_CAPTURA              # mapa sem nenhuma captura
+        self.bonus_total += bonus
+        jogo.pontos += bonus
+        self.pontos_vistos = jogo.pontos            # bônus de pontuação não vira moeda
+        self.loja.fechar()
+        x, y = jogo.jogador.retangulo.center
+        jogo.particulas.texto(x, y - 24, f"MAPA {self.mapas_concluidos} CONCLUÍDO +{bonus}", COR_SUCESSO)
+        self.recordes.registrar(jogo.pontos, self.mapas_concluidos, self.tempo_sobrevivencia)
+
+    def passar_tempo_transicao(self, dt_real):
+        """Durante a troca de mapa o jogo congela, mas os efeitos temporários continuam expirando."""
+        self.velocidade_restante = max(0.0, self.velocidade_restante - dt_real)
+        self.invisibilidade_restante = max(0.0, self.invisibilidade_restante - dt_real)
+        self.bussola_restante = max(0.0, self.bussola_restante - dt_real)
+
+    # ------------------------------------------------------------------
+    # Entrada (teclado e mouse)
+    # ------------------------------------------------------------------
+    def tratar_tecla(self, jogo, tecla):
+        """Retorna True se a tecla foi consumida por este modo."""
+        if jogo.estado != ESTADO_JOGANDO or jogo.transicao is not None:
+            return False
         if self.loja.aberta:
-            self.loja.fechar()
-            return
-        if self.escondido > 0:
-            return
-        if self.santuario_proximo() is None:
-            self.mostrar_mensagem("Encontre um Santuário (altar com cristal) para abrir a loja.")
-            return
-        self.loja.abrir()
-
-    # ------------------------------------------------------------------
-    # entrada (teclado e mouse)
-    # ------------------------------------------------------------------
-    def tratar_tecla(self, tecla):
-        """Teclas do modo durante o jogo. Retorna True se a tecla foi usada aqui."""
-        if self.animacao_captura > 0:
-            return tecla not in (pygame.K_ESCAPE, pygame.K_p)
+            if tecla in (pygame.K_UP, pygame.K_w):
+                self.loja.mover(-1)
+            elif tecla in (pygame.K_DOWN, pygame.K_s):
+                self.loja.mover(1)
+            elif tecla in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                self.comprar(jogo, self.loja.selecionado)
+            elif tecla in TECLAS_ITENS:
+                self.comprar(jogo, TECLAS_ITENS[tecla])
+            elif tecla in (pygame.K_e, pygame.K_ESCAPE):
+                self.loja.fechar()
+            else:
+                return False
+            return True
         if tecla in TECLAS_ITENS:
-            self.usar_item(TECLAS_ITENS[tecla])
+            self.usar_item(jogo, CATALOGO[TECLAS_ITENS[tecla]]["id"])
             return True
-        if tecla == pygame.K_e:
-            self.alternar_loja()
+        if tecla == pygame.K_e and self.perto_do_santuario:
+            self.loja.abrir()
             return True
-        if tecla == pygame.K_l:
-            self.jogo.luz_ativada = not self.jogo.luz_ativada
-            self.mostrar_mensagem("Iluminação ligada" if self.jogo.luz_ativada
-                                  else "Iluminação desligada")
-            return True
-        if not self.loja.aberta:
-            return False
-        if tecla in (pygame.K_UP, pygame.K_w):
-            self.loja.mover(-1)
-        elif tecla in (pygame.K_DOWN, pygame.K_s):
-            self.loja.mover(1)
-        elif tecla in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
-            self.comprar_selecionado()
-        elif tecla == pygame.K_ESCAPE:
-            self.loja.fechar()
-        else:
-            return False
-        return True
+        return False
 
-    def mover_mouse(self, posicao):
-        if self.loja.aberta:
-            indice = self.loja.opcao_no_ponto(posicao)
+    def tratar_mouse(self, jogo, evento):
+        """Cliques e movimento do mouse na loja. Retorna True se consumiu o evento."""
+        if not self.loja.aberta or jogo.estado != ESTADO_JOGANDO:
+            return False
+        if evento.type == pygame.MOUSEMOTION:
+            indice = self.loja.indice_em(evento.pos)
             if indice is not None:
                 self.loja.selecionado = indice
-
-    def clicar(self, posicao):
-        if not self.loja.aberta:
-            return
-        indice = self.loja.opcao_no_ponto(posicao)
-        if indice is not None:
-            self.loja.selecionado = indice
-            self.comprar_selecionado()
+            return True
+        if evento.type == pygame.MOUSEBUTTONDOWN and evento.button == 1:
+            if self.loja.botao_fechar.collidepoint(evento.pos):
+                self.loja.fechar()
+            else:
+                indice = self.loja.indice_em(evento.pos)
+                if indice is not None:
+                    self.loja.selecionado = indice
+                    self.comprar(jogo, indice)
+            return True
+        return False
 
     # ------------------------------------------------------------------
-    # desenho
+    # Desenho (ganchos chamados por Jogo.desenhar)
     # ------------------------------------------------------------------
-    def desenhar(self):
-        jogo = self.jogo
-        cena, tela, t = jogo.cena, jogo.tela, self.tempo_animacao
-        self.labirinto.desenhar(cena, t)
-        perto = self.santuario_proximo()
-        for tile in self.labirinto.santuarios:
-            x, y = tile[0] * TAMANHO_TILE, ALTURA_HUD + tile[1] * TAMANHO_TILE
-            desenhar_santuario(cena, x, y, t, tile == perto)
-        for tile, recarga in self.recargas.items():
-            x, y = tile[0] * TAMANHO_TILE, ALTURA_HUD + tile[1] * TAMANHO_TILE
-            ocupado = tile == self.esconderijo_atual and self.escondido > 0
-            desenhar_esconderijo(cena, x, y, t, recarga <= 0 or ocupado, ocupado,
-                                 recarga / RECARGA_ESCONDERIJO)
-        for armadilha in self.armadilhas:
-            armadilha.desenhar(cena)
-        for item in self.itens:
-            item.desenhar(cena, t)
-        for i, tile in enumerate(self.trilha_bussola):
-            raio = 3 + int(abs(math.sin(t * 5 - i * 0.6)) * 2)
-            pygame.draw.circle(cena, COR_OURO, self.centro_do_tile(tile), raio)
+    def desenhar_mundo(self, jogo, cena):
+        """Santuários e Guardião (antes do jogador)."""
+        for santuario in self.santuarios:
+            desenhar_santuario(cena, santuario.x, santuario.y, jogo.tempo_animacao,
+                               self.perto_do_santuario)
         self.guardiao.desenhar(cena)
-        self._desenhar_jogador(cena)
-        if self.animacao_captura > 0:
-            self._desenhar_garras(cena)
-        jogo.particulas.desenhar(cena, jogo.fonte_pequena)
-        if jogo.luz_ativada:
-            luzes = self.labirinto.tochas + [self.centro_do_tile(s) for s in self.labirinto.santuarios]
-            jogo.iluminacao.desenhar(cena, self.jogador.retangulo.center, luzes, t,
-                                     self.nivel["escuridao"])
-            # No breu, só os olhos do Guardião aparecem
-            desenhar_olhos_guardiao(cena, self.guardiao.retangulo, self.guardiao.tempo_animacao,
-                                    self.guardiao.estagio, self.guardiao.dormindo > 0)
-        if self.angulo_bussola is not None and self.efeito_bussola > 0:
-            desenhar_seta_bussola(cena, self.jogador.retangulo.center, self.angulo_bussola, t)
-        cena.blit(jogo.vinheta, (0, 0))
-        if self.proximidade_exibida > 0.55 and jogo.estado == ESTADO_JOGANDO:
-            intensidade = (self.proximidade_exibida - 0.55) / 0.45
-            pulso = 0.6 + 0.4 * abs(math.sin(t * (4 + 6 * intensidade)))
-            self.vinheta_perigo.set_alpha(int(255 * intensidade * pulso))
-            cena.blit(self.vinheta_perigo, (0, 0))
 
-        tela.fill(COR_FUNDO)
-        tela.blit(cena, self._deslocamento_tremor())
-        if perto is not None and not self.loja.aberta and jogo.estado == ESTADO_JOGANDO:
-            sx, sy = self.centro_do_tile(perto)
-            desenhar_texto_contorno(tela, jogo.fonte_pequena, "E: abrir o Santuário", COR_OURO,
-                                    (sx, sy - 34), (10, 8, 14), 2)
-        self._desenhar_hud()
-        self._desenhar_barra_inferior()
-        if self.flash > 0:
-            alfa = int(130 * self.flash / TEMPO_FLASH_DANO)
-            jogo.veu.fill((*self.cor_flash, min(200, alfa)))
-            tela.blit(jogo.veu, (0, 0))
-        if jogo.estado == ESTADO_JOGANDO:
-            if self.animacao_captura > 0:
-                self._desenhar_texto_captura()
-            if self.loja.aberta:
-                self.loja.desenhar(tela, (jogo.fonte_titulo, jogo.fonte, jogo.fonte_pequena),
-                                   self.ouro, self.inventario)
-            if self.tempo_titulo > 0 and not self.loja.aberta:
-                self._desenhar_titulo()
-            if self.tempo_mensagem > 0:
-                self._desenhar_mensagem()
-        elif jogo.estado == ESTADO_PAUSADO:
-            jogo.desenhar_pausa()
-        elif jogo.estado in (ESTADO_VITORIA, ESTADO_GAME_OVER):
-            self._desenhar_tela_final()
-        if self.tempo_fade > 0:
-            jogo.veu.fill((0, 0, 0, int(255 * self.tempo_fade / TEMPO_FADE)))
-            tela.blit(jogo.veu, (0, 0))
+    def desenhar_sobre_jogador(self, jogo, cena):
+        """Auras dos efeitos ativos e seta da bússola (depois do jogador)."""
+        centro = jogo.jogador.retangulo.center
+        t = jogo.tempo_animacao
+        if self.escudo_ativo:
+            desenhar_aura_escudo(cena, centro, t)
+        if self.velocidade_restante > 0:
+            desenhar_aura_velocidade(cena, centro, t)
+        if self.invisibilidade_restante > 0:
+            desenhar_aura_invisivel(cena, centro, t)
+        if self.bussola_restante > 0 and self.angulo_bussola is not None:
+            desenhar_seta_bussola(cena, centro, self.angulo_bussola, t)
 
-    def _deslocamento_tremor(self):
-        if self.tremor <= 0:
-            return (0, 0)
-        forca = int(INTENSIDADE_TREMOR * self.tremor / TEMPO_TREMOR)
-        return (random.randint(-forca, forca), random.randint(-forca, forca))
+    def desenhar_apos_luz(self, jogo, cena):
+        """Olhos do Guardião (visíveis no escuro) e moldura vermelha de perigo."""
+        desenhar_olhos_guardiao(cena, self.guardiao.retangulo, jogo.tempo_animacao,
+                                self.guardiao.estagio)
+        if self.nivel_proximidade > 0.45:
+            if self._vinheta_perigo is None:
+                self._vinheta_perigo = criar_vinheta_perigo()
+            intensidade = (self.nivel_proximidade - 0.45) / 0.55
+            pulso = 0.65 + 0.35 * math.sin(jogo.tempo_animacao * (6 + 6 * intensidade))
+            self._vinheta_perigo.set_alpha(int(190 * intensidade * pulso))
+            cena.blit(self._vinheta_perigo, (0, 0))
 
-    def _desenhar_jogador(self, cena):
-        jogador = self.jogador
-        if self.escondido > 0:
-            return                                  # dentro do barril (os olhos aparecem nele)
-        centro = jogador.retangulo.center
-        if self.inventario.quantidade("escudo") > 0:
-            desenhar_aura_escudo(cena, centro, self.tempo_animacao)
-        if self.efeito_invisivel > 0:
-            fantasma = self.superficie_fantasma
-            fantasma.fill((0, 0, 0, 0))
-            local = jogador.retangulo.copy()
-            local.center = (32, 32)
-            desenhar_jogador(fantasma, local, jogador.direcao, jogador.tempo_animacao,
-                             jogador.andando)
-            piscar = self.efeito_invisivel < 1.5 and int(self.efeito_invisivel * 8) % 2 == 0
-            fantasma.set_alpha(150 if piscar else 75)
-            cena.blit(fantasma, (centro[0] - 32, centro[1] - 32))
-        else:
-            jogador.desenhar(cena)
-        if self.efeito_velocidade > 0 and jogador.andando:
-            for i in range(3):
-                pygame.draw.line(cena, (240, 220, 120),
-                                 (centro[0] - 14 + i * 4, centro[1] + 6 + i * 3),
-                                 (centro[0] - 22 + i * 4, centro[1] + 6 + i * 3), 1)
-
-    def _desenhar_garras(self, cena):
-        """Tentáculos de sombra fechando sobre o jogador durante a captura."""
-        progresso = 1 - self.animacao_captura / TEMPO_ANIMACAO_CAPTURA
-        cx, cy = self.jogador.retangulo.center
-        for i in range(8):
-            angulo = i * math.pi / 4 + self.tempo_animacao * 2
-            externo = 46
-            interno = 46 * (1 - progresso) + 6
-            meio = (externo + interno) / 2
-            torcao = math.sin(self.tempo_animacao * 9 + i) * 0.4
-            pontos = [(cx + math.cos(angulo) * externo, cy + math.sin(angulo) * externo),
-                      (cx + math.cos(angulo + torcao) * meio, cy + math.sin(angulo + torcao) * meio),
-                      (cx + math.cos(angulo) * interno, cy + math.sin(angulo) * interno)]
-            pygame.draw.lines(cena, (30, 8, 45), False, pontos, 4)
-            pygame.draw.lines(cena, COR_GUARDIAO, False, pontos, 1)
-
-    # ---------------- interface ----------------
-    def _desenhar_hud(self):
-        jogo = self.jogo
-        tela, t = jogo.tela, self.tempo_animacao
-        tela.blit(jogo.fundo_hud, (0, 0))
-        jogo.desenhar_texto(NOME_MODO_PERSEGUICAO, jogo.fonte_titulo, COR_TEXTO, (20, 8))
-        imagem = jogo.fonte_pequena.render(f"Recorde: {jogo.recorde_perseguicao} pts", True,
-                                           (190, 160, 90))
-        tela.blit(imagem, imagem.get_rect(topright=(LARGURA_JANELA - 20, 14)))
-        y = 44
-        # vidas (o coração bate com uma vida só)
-        vidas = self.jogador.vidas
-        pulso = (math.sin(t * 8) + 1) / 2 if vidas == 1 else 0.0
-        for i in range(MAX_VIDAS_PERSEGUICAO):
-            desenhar_coracao(tela, 20 + i * 32, y + 1, i < vidas, pulso if i < vidas else 0.0)
-        # pontuação e ouro (valores separados)
-        jogo.desenhar_texto(f"Pontos {int(self.pontos_exibidos)}", jogo.fonte, COR_TEXTO, (130, y))
-        desenhar_icone_moeda(tela, 290, y, t)
-        jogo.desenhar_texto(str(self.ouro), jogo.fonte, COR_OURO, (318, y))
-        # chave
-        desenhar_icone_chave(tela, 385, y, self.tem_chave)
-        jogo.desenhar_texto("Chave!" if self.tem_chave else "Sem chave", jogo.fonte_pequena,
-                            COR_OURO if self.tem_chave else (150, 140, 130), (414, y + 3))
-        # tempo de sobrevivência
-        segundos = int(self.tempo_partida)
-        desenhar_icone_relogio(tela, 515, y, COR_TEXTO, t)
-        jogo.desenhar_texto(f"{segundos // 60}:{segundos % 60:02d}", jogo.fonte, COR_TEXTO,
-                            (543, y))
-        # estágio do Guardião
-        estagio = self.guardiao.estagio
-        if self.guardiao.dormindo > 0:
-            texto, cor = "dormindo", (150, 140, 190)
-        else:
-            texto = estagio
-            cor = {ESTAGIO_CACADA: COR_ALERTA, ESTAGIO_FURIA: (255, 120, 40)}.get(estagio,
-                                                                                  (200, 170, 255))
-        jogo.desenhar_texto("Guardião:", jogo.fonte_pequena, COR_TEXTO, (625, y + 3))
-        jogo.desenhar_texto(texto, jogo.fonte, cor, (710, y))
-
-    def _desenhar_barra_inferior(self):
-        """Inventário (esquerda), efeitos ativos (meio) e proximidade (direita)."""
-        jogo = self.jogo
-        tela, t = jogo.tela, self.tempo_animacao
-        topo = ALTURA_JANELA - 40
-        faixa = pygame.Surface((LARGURA_JANELA, 40), pygame.SRCALPHA)
-        faixa.fill((14, 10, 20, 205))
-        tela.blit(faixa, (0, topo))
-        pygame.draw.line(tela, (170, 126, 48), (0, topo), (LARGURA_JANELA, topo), 2)
-        # inventário
-        for i, item in enumerate(CATALOGO):
-            slot = pygame.Rect(10 + i * 46, topo + 3, 40, 34)
-            quantidade = self.inventario.quantidade(item["id"])
-            ativo = self._efeito_restante(item["id"]) > 0
-            pygame.draw.rect(tela, (40, 34, 50) if quantidade else (26, 22, 32), slot,
-                             border_radius=6)
-            cor_borda = COR_OURO if ativo else ((124, 108, 146) if quantidade else (60, 54, 70))
-            pygame.draw.rect(tela, cor_borda, slot, 2, border_radius=6)
-            desenhar_icone_item(tela, item["id"], slot.center, t, 0.95)
-            if not quantidade and not ativo:
-                veu = pygame.Surface(slot.size, pygame.SRCALPHA)
-                veu.fill((10, 8, 14, 150))
-                tela.blit(veu, slot.topleft)
-            tela.blit(jogo.fonte_pequena.render(item["tecla"], True, COR_OURO),
-                      (slot.x + 3, slot.y - 2))
-            qtd = jogo.fonte_pequena.render(str(quantidade), True, COR_TEXTO)
-            tela.blit(qtd, qtd.get_rect(bottomright=(slot.right - 3, slot.bottom + 2)))
-        # efeitos ativos
-        efeitos = []
-        if self.efeito_velocidade > 0:
-            efeitos.append((f"Veloz {math.ceil(self.efeito_velocidade)}s", (230, 200, 40)))
-        if self.efeito_invisivel > 0:
-            efeitos.append((f"Invisível {math.ceil(self.efeito_invisivel)}s", COR_INVISIVEL))
-        if self.efeito_bussola > 0:
-            efeitos.append((f"Bússola {math.ceil(self.efeito_bussola)}s", COR_OURO))
-        if self.escondido > 0:
-            efeitos.append((f"Escondido {math.ceil(self.escondido)}s", COR_SUCESSO))
-        if self.lentidao > 0:
-            efeitos.append(("Lento", COR_ALERTA))
-        x = 250
-        for texto, cor in efeitos:
-            imagem = jogo.fonte_pequena.render(texto, True, cor)
-            tela.blit(imagem, (x, topo + 10))
-            x += imagem.get_width() + 14
-        # indicador de proximidade
-        nivel = self.proximidade_exibida
-        cor = cor_proximidade(nivel)
-        desenhar_olho_proximidade(tela, (LARGURA_JANELA - 262, topo + 20), nivel, t)
-        barra = pygame.Rect(LARGURA_JANELA - 240, topo + 13, 110, 14)
-        pygame.draw.rect(tela, (30, 24, 36), barra, border_radius=7)
-        cheio = barra.copy()
-        cheio.width = max(6, int(barra.width * nivel))
-        pygame.draw.rect(tela, cor, cheio, border_radius=7)
-        pygame.draw.rect(tela, (230, 220, 200), barra, 1, border_radius=7)
-        rotulo = self.rotulo_proximidade
-        if rotulo == "PERIGO!" and int(t * 6) % 2 == 0:
-            cor = (255, 255, 255)
-        tela.blit(jogo.fonte.render(rotulo, True, cor), (LARGURA_JANELA - 120, topo + 7))
-
-    def _efeito_restante(self, identificador):
-        return {"velocidade": self.efeito_velocidade, "invisibilidade": self.efeito_invisivel,
-                "bussola": self.efeito_bussola}.get(identificador, 0.0)
-
-    def _desenhar_mensagem(self):
-        jogo = self.jogo
-        imagem = jogo.fonte.render(self.mensagem, True, COR_TEXTO)
-        fundo = imagem.get_rect(center=(LARGURA_JANELA // 2, ALTURA_HUD + 22))
-        fundo.inflate_ip(30, 12)
-        superficie = pygame.Surface(fundo.size, pygame.SRCALPHA)
-        superficie.fill((0, 0, 0, 200))
-        jogo.tela.blit(superficie, fundo.topleft)
-        pygame.draw.rect(jogo.tela, COR_OURO, fundo, 2, border_radius=8)
-        jogo.tela.blit(imagem, imagem.get_rect(center=fundo.center))
-
-    def _desenhar_titulo(self):
-        """Faixa de abertura com o nome do modo e as dicas de controle."""
-        jogo = self.jogo
-        total = TEMPO_TITULO_FASE + 0.8
-        t = self.tempo_titulo
-        fator = max(0.0, min(1.0, (total - t) / 0.4, t / 0.5))
-        faixa = pygame.Surface((LARGURA_JANELA, 120), pygame.SRCALPHA)
-        faixa.fill((0, 0, 0, int(180 * fator)))
-        jogo.tela.blit(faixa, (0, 260))
-        textos = [("PERSEGUIÇÃO", jogo.fonte, COR_OURO, 284),
-                  ("O Guardião das Trevas", jogo.fonte_titulo, COR_TEXTO, 318),
-                  ("E: santuário/loja   1-5: usar itens   barris: esconderijos   "
-                   "paredes rachadas: passagens secretas", jogo.fonte_pequena, (200, 190, 170), 354)]
-        for texto, fonte, cor, y in textos:
-            imagem = fonte.render(texto, True, cor)
-            imagem.set_alpha(int(255 * fator))
-            jogo.tela.blit(imagem, imagem.get_rect(center=(LARGURA_JANELA // 2, y)))
-
-    def _desenhar_texto_captura(self):
-        progresso = 1 - self.animacao_captura / TEMPO_ANIMACAO_CAPTURA
-        alfa = int(255 * min(1.0, progresso * 3))
-        desenhar_texto_contorno(self.jogo.tela, self.jogo.fonte_gigante, "CAPTURADO!",
-                                (190, 120, 255), (LARGURA_JANELA // 2, 300), (20, 5, 30), 4, alfa)
-
-    def _desenhar_tela_final(self):
-        jogo = self.jogo
+    def desenhar_hud(self, jogo):
+        """Barra superior do modo (substitui a barra padrão)."""
         tela = jogo.tela
-        vitoria = jogo.estado == ESTADO_VITORIA
-        alfa = min(195, int(jogo.tempo_fim * 400))
-        jogo.veu.fill((0, 0, 0, alfa))
-        tela.blit(jogo.veu, (0, 0))
-        progresso = min(1.0, jogo.tempo_fim / 0.6)
-        queda = int((1 - progresso) ** 2 * 120)
+        t = jogo.tempo_animacao
+        tela.blit(jogo.fundo_hud, (0, 0))
+        jogo.desenhar_texto(NOME_MODO.upper(), jogo.fonte_titulo, COR_TEXTO, (20, 8))
+        jogo.desenhar_texto(f"Mapa {jogo.numero_fase}", jogo.fonte, COR_OURO, (215, 11))
+        jogo.desenhar_texto(f"Tempo {formatar_tempo(self.tempo_sobrevivencia)}", jogo.fonte,
+                            COR_TEXTO, (320, 11))
+        estagio = self.guardiao.estagio
+        cor_estagio = COR_ALERTA if estagio != "vigilancia" else (180, 160, 210)
+        jogo.desenhar_texto(ROTULO_ESTAGIO[estagio], jogo.fonte_pequena, cor_estagio, (470, 14))
+        rotulo, cor_rotulo = self.rotulo_proximidade()
+        jogo.desenhar_texto(rotulo, jogo.fonte_pequena, cor_rotulo, (590, 14))
+        desenhar_indicador_proximidade(tela, 690, 14, 250, self.nivel_proximidade, t)
+
+        y = 44
+        jogo.desenhar_texto(f"PTS {int(jogo.pontos_exibidos)}", jogo.fonte, COR_OURO, (20, y))
+        desenhar_icone_moeda(tela, 150, y, t)
+        jogo.desenhar_texto(str(self.saldo), jogo.fonte, COR_OURO, (178, y))
+        for i in range(VIDAS_INICIAIS):
+            desenhar_coracao(tela, 250 + i * 30, y + 1, i < jogo.jogador.vidas)
+        desenhar_icone_chave(tela, 352, y, jogo.chaves_coletadas >= jogo.chaves_necessarias)
+        jogo.desenhar_texto(f"{jogo.chaves_coletadas}/{jogo.chaves_necessarias}",
+                            jogo.fonte_pequena, COR_OURO, (380, y + 4))
+
+        # inventário: [tecla] ícone xquantidade (apagado se vazio; barra mostra o efeito ativo)
+        if self._escurecer_icone is None:
+            self._escurecer_icone = pygame.Surface((28, 28), pygame.SRCALPHA)
+            self._escurecer_icone.fill((20, 16, 28, 160))
+        restantes = {ITEM_VELOCIDADE: (self.velocidade_restante, DURACAO_VELOCIDADE),
+                     ITEM_INVISIBILIDADE: (self.invisibilidade_restante, DURACAO_INVISIBILIDADE),
+                     ITEM_BUSSOLA: (self.bussola_restante, DURACAO_BUSSOLA)}
+        for i, item in enumerate(CATALOGO):
+            x = 432 + i * 100
+            quantidade = self.inventario.quantidade(item["id"])
+            desenhar_icone_item(tela, item["id"], x + 14, y + 12, t)
+            if quantidade == 0:
+                tela.blit(self._escurecer_icone, (x, y - 2))
+            jogo.desenhar_texto(f"{i + 1}:x{quantidade}", jogo.fonte_pequena,
+                                COR_TEXTO if quantidade else (130, 120, 140), (x + 32, y + 3))
+            if item["id"] == ITEM_ESCUDO and self.escudo_ativo:
+                pygame.draw.rect(tela, (120, 180, 255), (x, y + 26, 60, 4))
+            elif item["id"] in restantes and restantes[item["id"]][0] > 0:
+                restante, total = restantes[item["id"]]
+                pygame.draw.rect(tela, COR_SUCESSO, (x, y + 26, int(60 * restante / total), 4))
+
+    def desenhar_interface(self, jogo):
+        """Aviso do santuário e a loja, por cima de tudo (o jogo segue rodando por baixo)."""
+        tela = jogo.tela
+        if self.perto_do_santuario and not self.loja.aberta:
+            desenhar_texto_contorno(tela, jogo.fonte, "Pressione E: Santuário do Aventureiro",
+                                    COR_OURO, (LARGURA_JANELA // 2, ALTURA_JANELA - 74),
+                                    (10, 8, 14), 2)
+        if self.loja.aberta:
+            self.loja.desenhar(tela, (jogo.fonte_titulo, jogo.fonte, jogo.fonte_pequena),
+                               self.saldo, self.inventario, jogo.tempo_animacao)
+
+    def desenhar_estatisticas(self, jogo):
+        """Linhas extras da tela de Game Over (o modo é infinito: só termina ao perder)."""
         centro = LARGURA_JANELA // 2
-        titulo = "VOCÊ ESCAPOU!" if vitoria else "GAME OVER"
-        cor = COR_SUCESSO if vitoria else COR_ALERTA
-        imagem = jogo.fonte_gigante.render(titulo, True, cor)
-        pulso = 1.0 + 0.04 * math.sin(jogo.tempo_fim * 4)
-        imagem = pygame.transform.scale(imagem, (int(imagem.get_width() * pulso),
-                                                 int(imagem.get_height() * pulso)))
-        imagem.set_alpha(int(255 * progresso))
-        tela.blit(imagem, imagem.get_rect(center=(centro, 150 - queda)))
-        if progresso < 1.0:
-            return
-        subtitulo = "Você fugiu da masmorra do Guardião das Trevas." if vitoria \
-            else "O Guardião das Trevas te arrastou para as sombras."
-        jogo.desenhar_texto(subtitulo, jogo.fonte_pequena, COR_TEXTO, (centro, 202),
-                            centralizar=True)
-        segundos = int(self.tempo_partida)
-        linhas = [(f"Pontuação final: {self.pontos}", jogo.fonte_titulo, COR_OURO),
-                  (f"Tempo de sobrevivência: {segundos // 60}:{segundos % 60:02d}",
-                   jogo.fonte, COR_TEXTO)]
-        if vitoria:
-            linhas.append((f"Capturas sofridas: {self.capturas}", jogo.fonte, COR_TEXTO))
-            bonus = "   |   ".join(f"{nome} +{pontos}" for nome, pontos in self.bonus)
-            linhas.append((f"Bônus: {bonus}", jogo.fonte, COR_SUCESSO))
-        else:
-            linhas.append((f"Moedas coletadas: {self.moedas_coletadas}   |   Tesouros: "
-                           f"{self.tesouros_coletados}", jogo.fonte, COR_TEXTO))
-            linhas.append((f"Capturas sofridas: {self.capturas}", jogo.fonte, COR_TEXTO))
-        recorde = "NOVO RECORDE!" if self.novo_recorde else \
-            f"Recorde do modo: {jogo.recorde_perseguicao} pts"
-        linhas.append((recorde, jogo.fonte, COR_OURO if self.novo_recorde else (190, 160, 90)))
-        for i, (texto, fonte, cor_linha) in enumerate(linhas):
-            jogo.desenhar_texto(texto, fonte, cor_linha, (centro, 240 + i * 36), centralizar=True)
-        jogo.menu_fim.desenhar(tela, jogo.fonte_botao, jogo.tempo_fim)
-        jogo.desenhar_texto("R: jogar novamente   |   M ou ESC: voltar ao menu",
-                            jogo.fonte_pequena, COR_TEXTO, (centro, 590), centralizar=True)
+        recordes = self.recordes
+        linhas = [
+            f"Mapas concluídos: {self.mapas_concluidos}"
+            f"   |   Tempo de sobrevivência: {formatar_tempo(self.tempo_sobrevivencia)}",
+            f"Moedas coletadas: {self.moedas_coletadas}   |   Capturas sofridas: {self.capturas}",
+            f"Recorde: {recordes.melhor_pontuacao} pontos  |  {recordes.mais_mapas} mapas  |  "
+            f"{formatar_tempo(recordes.maior_tempo)}",
+        ]
+        for i, texto in enumerate(linhas):
+            jogo.desenhar_texto(texto, jogo.fonte_pequena, COR_TEXTO if i < 2 else (190, 160, 90),
+                                (centro, 366 + i * 24), centralizar=True)

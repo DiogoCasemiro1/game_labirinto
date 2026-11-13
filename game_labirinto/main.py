@@ -1,27 +1,23 @@
 """
-Labirinto: A Fuga - ETAPA 7 (menus)
+Labirinto: A Fuga - ETAPA 8 (terceiro modo)
 Cobre as etapas 1 a 9 do roteiro: menu inicial, instruções, escolha de modo,
 pausa e telas de Game Over / vitória, além de animações e fases aleatórias.
+Três modos: Campanha, Infinito e Perseguição (o Guardião das Trevas).
 
-Como jogar:  python main.py   (o modo - campanha, infinito ou perseguição - é escolhido no menu)
+Como jogar:  python main.py   (o modo é escolhido no menu)
 
 Organização:
   constantes.py -> valores configuráveis
   niveis.py     -> mapas e lista de fases da campanha
   gerador.py    -> gerador aleatório de fases (modo infinito)
   interface.py  -> botões, menus, fundo animado do menu e tela de instruções
+  perseguicao.py, guardiao.py, loja.py, inventario.py, gerador_perseguicao.py,
+  desenho_perseguicao.py, constantes_perseguicao.py -> modo Perseguição
   assets.py     -> carregamento opcional das imagens PNG (sprites)
   desenho.py    -> funções que desenham (pixel art com formas do Pygame)
   efeitos.py    -> partículas, textos flutuantes, iluminação e vinheta
   entidades.py  -> Item, Labirinto, Jogador, inimigos e armadilhas
   main.py       -> classe Jogo (laço principal, regras e interface)
-
-  Modo Perseguição (terceiro modo, em módulos próprios):
-  perseguicao.py          -> PartidaPerseguicao (dados e regras de uma partida do modo)
-  guardiao.py             -> Guardião das Trevas (IA com o BFS do Labirinto)
-  loja.py                 -> Santuário do Aventureiro (catálogo, inventário e loja)
-  mapa_perseguicao.py     -> mapas do modo (usa o gerador original sem alterá-lo)
-  desenho_perseguicao.py  -> desenhos do Guardião, santuário, esconderijos e itens
 """
 
 import math
@@ -32,8 +28,9 @@ import pygame
 
 from assets import sprites
 from constantes import (
-    ACAO_PERSEGUICAO, ALTURA_JANELA, CHEFE, COR_ALERTA, COR_FUNDO, COR_OURO,
+    ALTURA_JANELA, CHEFE, COR_ALERTA, COR_FUNDO, COR_OURO,
     COR_SUCESSO, COR_TEXTO, COR_VIDA, ESQUELETO, ESTADO_GAME_OVER,
+    DIFICULDADE_PADRAO, DIFICULDADES_INFINITO, ESTADO_DIFICULDADE,
     ESTADO_INSTRUCOES, ESTADO_JOGANDO, ESTADO_MENU, ESTADO_MODOS,
     ESTADO_PAUSADO, ESTADO_VITORIA, FPS, GOBLIN, INTERVALO_CHEFE,
     INTERVALO_POEIRA, INTENSIDADE_TREMOR, LARGURA_JANELA, LUZ_ATIVADA,
@@ -54,7 +51,9 @@ from interface import (
     desenhar_titulo,
 )
 from niveis import NIVEIS
-from perseguicao import PartidaPerseguicao
+# --- modo Perseguição (código separado em módulos próprios) ---
+from gerador_perseguicao import gerar_nivel_perseguicao
+from perseguicao import ModoPerseguicao, RecordesPerseguicao
 
 # Para cada símbolo de inimigo no mapa: (classe, velocidade base)
 TIPOS_INIMIGO = {
@@ -73,10 +72,13 @@ class Jogo:
 
     def __init__(self, modo_infinito=MODO_INFINITO):
         self.modo_infinito = modo_infinito
+        self.dificuldade_infinito = DIFICULDADE_PADRAO   # só vale para o modo infinito
+        self.vidas_iniciais = VIDAS_INICIAIS             # vidas do começo da partida atual
+        self.modo_perseguicao = False        # terceiro modo (independente do modo_infinito)
+        self.perseguicao = None              # dados da partida de Perseguição (None nos outros modos)
+        self.recordes_perseguicao = RecordesPerseguicao()
         self.mapas_usados = set()      # assinaturas dos mapas já jogados (nunca repete)
         self.recorde_fase = 0          # fase mais alta alcançada nesta sessão
-        self.perseguicao = None        # partida do modo Perseguição (None nos outros modos)
-        self.recorde_perseguicao = 0   # melhor pontuação do modo Perseguição nesta sessão
         pygame.init()
         pygame.display.set_caption("Labirinto: A Fuga")
         self.tela = pygame.display.set_mode((LARGURA_JANELA, ALTURA_JANELA))
@@ -104,6 +106,16 @@ class Jogo:
         self.novo_jogo()
         self.ir_para_menu()
 
+    @staticmethod
+    def texto_vidas(quantidade):
+        return f"{quantidade} VIDA" if quantidade == 1 else f"{quantidade} VIDAS"
+
+    def vidas_do_modo(self):
+        """Vidas iniciais: vêm da dificuldade no modo infinito; nos demais modos, o padrão."""
+        if self.modo_infinito and not self.modo_perseguicao:
+            return DIFICULDADES_INFINITO[self.dificuldade_infinito]["vidas"]
+        return VIDAS_INICIAIS
+
     def criar_menus(self):
         """Cria os menus de botões de cada tela."""
         meio = LARGURA_JANELA // 2
@@ -112,8 +124,13 @@ class Jogo:
             meio, 300)
         self.menu_modos = MenuVertical(
             [("Modo Campanha", "campanha"), ("Modo Infinito", "infinito"),
-             ("Modo Perseguição", ACAO_PERSEGUICAO), ("Voltar", "voltar")],
+             ("Modo Perseguição", "perseguicao"), ("Voltar", "voltar")],
             meio, 290, largura=400)
+        self.menu_dificuldade = MenuVertical(
+            [(config["nome"].upper(), chave, self.texto_vidas(config["vidas"]))
+             for chave, config in DIFICULDADES_INFINITO.items()]
+            + [("VOLTAR", "voltar_modos")],
+            meio, 268, largura=400, altura=64)
         self.menu_pausa = MenuVertical(
             [("Continuar", "continuar"), ("Voltar ao menu", "menu")], meio, 320)
         self.menu_fim = MenuVertical(
@@ -130,7 +147,12 @@ class Jogo:
     # ---------------- controle de partida e fases ----------------
     def novo_jogo(self):
         """Zera pontos e vidas e começa pela primeira fase."""
+        # Cada partida de Perseguição começa com dados novos (nada vaza entre partidas/modos)
+        self.perseguicao = (ModoPerseguicao(self.recordes_perseguicao)
+                            if self.modo_perseguicao else None)
         self.jogador = Jogador()
+        self.vidas_iniciais = self.vidas_do_modo()
+        self.jogador.vidas = self.vidas_iniciais     # dificuldade (infinito) ou padrão
         self.pontos = 0
         self.pontos_exibidos = 0.0     # a pontuação na tela "sobe" até o valor real
         self.estado = ESTADO_JOGANDO
@@ -148,10 +170,13 @@ class Jogo:
         Dados da fase 'numero' (1, 2, 3...). Na campanha vêm da lista NIVEIS;
         no modo infinito são gerados na hora, sempre diferentes dos anteriores.
         """
-        if not self.modo_infinito:
+        if not self.modo_infinito and not self.modo_perseguicao:
             return NIVEIS[numero - 1]
         for _ in range(20):
-            nivel = gerar_nivel(numero)
+            if self.modo_perseguicao:
+                nivel = gerar_nivel_perseguicao(numero)
+            else:
+                nivel = gerar_nivel(numero)
             assinatura = tuple(nivel["mapa"])
             if assinatura not in self.mapas_usados:
                 break
@@ -180,6 +205,8 @@ class Jogo:
         self.transicao = None
         self.tempo_transicao = 0.0
         self.particulas.limpar()
+        if self.perseguicao is not None:
+            self.perseguicao.preparar(self)
 
     def criar_inimigos(self, fator_velocidade):
         """Cria um inimigo para cada 'E', 'X' ou 'B' do mapa."""
@@ -191,6 +218,8 @@ class Jogo:
 
     def iniciar_saida(self):
         """O jogador atravessou a porta: a tela escurece e, depois, muda de fase."""
+        if self.perseguicao is not None:
+            self.perseguicao.ao_escapar(self)       # bônus de fuga e recordes
         self.transicao = TRANSICAO_SAINDO
         self.tempo_transicao = 0.0
         x, y = self.labirinto.porta.center
@@ -207,8 +236,9 @@ class Jogo:
         if self.tempo_transicao < TEMPO_FADE:
             return
         if self.transicao == TRANSICAO_SAINDO:
-            if self.modo_infinito or self.numero_fase < len(NIVEIS):
-                self.carregar_fase(self.numero_fase + 1)
+            if self.perseguicao is not None or self.modo_infinito \
+                    or self.numero_fase < len(NIVEIS):
+                self.carregar_fase(self.numero_fase + 1)   # infinitos: sempre há um próximo mapa
                 self.transicao = TRANSICAO_ENTRANDO
             else:
                 self.estado = ESTADO_VITORIA
@@ -263,7 +293,8 @@ class Jogo:
         if self.jogador.vidas <= 0:
             self.estado = ESTADO_GAME_OVER
             self.tempo_fim = 0.0
-            self.recorde_fase = max(self.recorde_fase, self.numero_fase)
+            if self.perseguicao is None:      # o recorde de fase é só dos modos de fases
+                self.recorde_fase = max(self.recorde_fase, self.numero_fase)
         else:
             self.mostrar_mensagem(mensagem)
 
@@ -301,18 +332,15 @@ class Jogo:
             return self.menu_principal
         if self.estado == ESTADO_MODOS:
             return self.menu_modos
+        if self.estado == ESTADO_DIFICULDADE:
+            return self.menu_dificuldade
         if self.estado == ESTADO_PAUSADO:
             return self.menu_pausa
         if self.estado in (ESTADO_GAME_OVER, ESTADO_VITORIA) and self.tempo_fim >= 0.6:
             return self.menu_fim
         return None
 
-    def iniciar_perseguicao(self):
-        """Começa uma partida NOVA do modo Perseguição (dados próprios e isolados)."""
-        self.perseguicao = PartidaPerseguicao(self)
-
     def ir_para_menu(self):
-        self.perseguicao = None        # descarta tudo do modo Perseguição
         self.estado = ESTADO_MENU
         self.menu_principal.selecionado = 0
         self.tempo_menu = 0.0
@@ -328,21 +356,33 @@ class Jogo:
             self.tempo_menu = 0.0
         elif acao == "sair":
             self.rodando = False
-        elif acao in ("campanha", "infinito"):
-            self.perseguicao = None
-            self.modo_infinito = acao == "infinito"
+        elif acao == "campanha":
+            self.modo_infinito = False
+            self.modo_perseguicao = False
             self.novo_jogo()
-        elif acao == ACAO_PERSEGUICAO:
-            self.iniciar_perseguicao()
+        elif acao == "infinito":
+            # o infinito pede a dificuldade antes de começar
+            self.estado = ESTADO_DIFICULDADE
+            self.menu_dificuldade.selecionado = 1        # começa em Médio (o padrão)
+            self.tempo_menu = 0.0
+        elif acao in DIFICULDADES_INFINITO:
+            self.dificuldade_infinito = acao
+            self.modo_infinito = True
+            self.modo_perseguicao = False
+            self.novo_jogo()
+        elif acao == "voltar_modos":
+            self.estado = ESTADO_MODOS
+            self.tempo_menu = 0.0
+        elif acao == "perseguicao":
+            self.modo_perseguicao = True
+            self.modo_infinito = False
+            self.novo_jogo()
         elif acao == "voltar":
             self.ir_para_menu()
         elif acao == "continuar":
             self.estado = ESTADO_JOGANDO
         elif acao == "reiniciar":
-            if self.perseguicao is not None:
-                self.iniciar_perseguicao()
-            else:
-                self.novo_jogo()
+            self.novo_jogo()
         elif acao == "menu":
             self.ir_para_menu()
 
@@ -353,8 +393,8 @@ class Jogo:
                 self.ir_para_menu()
             return
         if self.estado == ESTADO_JOGANDO:
-            if self.perseguicao is not None and self.perseguicao.tratar_tecla(tecla):
-                return
+            if self.perseguicao is not None and self.perseguicao.tratar_tecla(self, tecla):
+                return                                  # item, loja ou santuário usou a tecla
             if tecla in (pygame.K_ESCAPE, pygame.K_p):
                 self.estado = ESTADO_PAUSADO
                 self.menu_pausa.selecionado = 0
@@ -377,6 +417,8 @@ class Jogo:
             self.executar_acao("continuar")
         elif self.estado == ESTADO_MODOS and tecla == pygame.K_ESCAPE:
             self.executar_acao("voltar")
+        elif self.estado == ESTADO_DIFICULDADE and tecla == pygame.K_ESCAPE:
+            self.executar_acao("voltar_modos")
         elif self.estado in (ESTADO_GAME_OVER, ESTADO_VITORIA):
             if tecla == pygame.K_r:
                 self.executar_acao("reiniciar")
@@ -385,6 +427,8 @@ class Jogo:
 
     def tratar_eventos(self):
         for evento in pygame.event.get():
+            if self.perseguicao is not None and self.perseguicao.tratar_mouse(self, evento):
+                continue                                # clique/movimento na loja
             if evento.type == pygame.QUIT:
                 self.rodando = False
             elif evento.type == pygame.MOUSEMOTION:
@@ -392,8 +436,6 @@ class Jogo:
                 menu = self.menu_atual()
                 if menu is not None:
                     menu.passar_mouse(evento.pos)
-                elif self.perseguicao is not None and self.estado == ESTADO_JOGANDO:
-                    self.perseguicao.mover_mouse(evento.pos)
             elif evento.type == pygame.MOUSEBUTTONDOWN and evento.button == 1:
                 menu = self.menu_atual()
                 if menu is not None:
@@ -402,8 +444,6 @@ class Jogo:
                         self.executar_acao(acao)
                 elif self.estado == ESTADO_INSTRUCOES:
                     self.ir_para_menu()
-                elif self.perseguicao is not None and self.estado == ESTADO_JOGANDO:
-                    self.perseguicao.clicar(evento.pos)
             elif evento.type == pygame.KEYDOWN:
                 self.tratar_tecla(evento.key)
 
@@ -427,15 +467,12 @@ class Jogo:
                 self.particulas.brasa(x, y - 8)
 
     def atualizar(self, dt, dt_real):
-        if self.estado in (ESTADO_MENU, ESTADO_MODOS, ESTADO_INSTRUCOES):
+        if self.estado in (ESTADO_MENU, ESTADO_MODOS, ESTADO_DIFICULDADE, ESTADO_INSTRUCOES):
             self.tempo_menu += dt_real
             self.fundo_menu.atualizar(dt, self.mouse_pos)
             return
         if self.estado == ESTADO_PAUSADO:
             self.tempo_menu += dt_real      # só a interface da pausa anima; o jogo fica parado
-            return
-        if self.perseguicao is not None:    # modo Perseguição tem a própria partida
-            self.perseguicao.atualizar(dt, dt_real)
             return
         self.atualizar_efeitos(dt, dt_real)
         if self.estado != ESTADO_JOGANDO:
@@ -444,6 +481,8 @@ class Jogo:
                 self.atualizar_transicao(dt_real)
             return
         if self.transicao is not None:
+            if self.perseguicao is not None:
+                self.perseguicao.passar_tempo_transicao(dt_real)   # efeitos continuam expirando
             self.atualizar_transicao(dt_real)
             return
         self.jogador.atualizar(dt, self.labirinto)
@@ -457,10 +496,12 @@ class Jogo:
         for armadilha in self.armadilhas:
             armadilha.atualizar(dt)
         self.verificar_inimigos()
+        if self.perseguicao is not None and self.estado == ESTADO_JOGANDO:
+            self.perseguicao.atualizar(self, dt, dt_real)
         if self.estado == ESTADO_JOGANDO:
             self.verificar_armadilhas()
-        if self.estado == ESTADO_JOGANDO:
-            self.atualizar_cronometro(dt_real)
+        if self.estado == ESTADO_JOGANDO and self.perseguicao is None:
+            self.atualizar_cronometro(dt_real)      # a Perseguição não tem limite de tempo
 
     def atualizar_poeira(self, dt):
         """Solta uma nuvenzinha de poeira de vez em quando enquanto o jogador anda."""
@@ -481,12 +522,8 @@ class Jogo:
         return (random.randint(-forca, forca), random.randint(-forca, forca))
 
     def desenhar(self):
-        if self.estado in (ESTADO_MENU, ESTADO_MODOS, ESTADO_INSTRUCOES):
+        if self.estado in (ESTADO_MENU, ESTADO_MODOS, ESTADO_DIFICULDADE, ESTADO_INSTRUCOES):
             self.desenhar_telas_de_menu()
-            pygame.display.flip()
-            return
-        if self.perseguicao is not None:
-            self.perseguicao.desenhar()
             pygame.display.flip()
             return
         cena = self.cena
@@ -497,12 +534,18 @@ class Jogo:
             item.desenhar(cena, self.tempo_animacao)
         for inimigo in self.inimigos:
             inimigo.desenhar(cena)
+        if self.perseguicao is not None:
+            self.perseguicao.desenhar_mundo(self, cena)
         self.jogador.desenhar(cena)
+        if self.perseguicao is not None:
+            self.perseguicao.desenhar_sobre_jogador(self, cena)
         self.particulas.desenhar(cena, self.fonte_pequena)
         if self.luz_ativada:
             escuridao = self.nivel["escuridao"]
             self.iluminacao.desenhar(cena, self.jogador.retangulo.center,
                                      self.labirinto.tochas, self.tempo_animacao, escuridao)
+        if self.perseguicao is not None:
+            self.perseguicao.desenhar_apos_luz(self, cena)
         cena.blit(self.vinheta, (0, 0))
 
         # A cena (com tremor) vai para a tela; a interface fica por cima, sem tremer
@@ -514,6 +557,8 @@ class Jogo:
             self.desenhar_titulo_fase()
         if self.tempo_mensagem > 0 and self.estado == ESTADO_JOGANDO:
             self.desenhar_mensagem()
+        if self.perseguicao is not None and self.estado == ESTADO_JOGANDO:
+            self.perseguicao.desenhar_interface(self)       # aviso do santuário e loja
         if self.estado == ESTADO_PAUSADO:
             self.desenhar_pausa()
         elif self.estado == ESTADO_GAME_OVER:
@@ -533,6 +578,9 @@ class Jogo:
         self.tela.blit(imagem, retangulo)
 
     def desenhar_hud(self):
+        if self.perseguicao is not None:
+            self.perseguicao.desenhar_hud(self)             # barra própria do modo
+            return
         self.tela.blit(self.fundo_hud, (0, 0))
         self.desenhar_texto(f"Fase {self.numero_fase} - {self.nivel['nome']}",
                             self.fonte_titulo, COR_TEXTO, (20, 8))
@@ -540,7 +588,9 @@ class Jogo:
         if self.modo_infinito:
             # Modo infinito: mostra o recorde da sessão no canto
             recorde = max(self.recorde_fase, self.numero_fase)
-            imagem = self.fonte_pequena.render(f"Recorde: fase {recorde}", True, (190, 160, 90))
+            nome_dificuldade = DIFICULDADES_INFINITO[self.dificuldade_infinito]["nome"]
+            imagem = self.fonte_pequena.render(f"{nome_dificuldade}  |  Recorde: fase {recorde}",
+                                               True, (190, 160, 90))
             self.tela.blit(imagem, imagem.get_rect(topright=(LARGURA_JANELA - 20, 14)))
         else:
             # Campanha: uma bolinha por fase (cheia = já alcançada)
@@ -559,7 +609,7 @@ class Jogo:
         pulso = 0.0
         if self.jogador.vidas == 1:
             pulso = (math.sin(self.tempo_animacao * 8) + 1) / 2
-        for i in range(max(VIDAS_INICIAIS, self.jogador.vidas)):
+        for i in range(max(self.vidas_iniciais, self.jogador.vidas)):
             cheio = i < self.jogador.vidas
             desenhar_coracao(self.tela, 250 + i * 32, y + 1, cheio,
                              pulso if cheio and self.jogador.vidas == 1 else 0.0)
@@ -596,7 +646,9 @@ class Jogo:
         deslocamento = int((1 - fator) * 24)
         self.tela.blit(faixa, (0, 270 + deslocamento))
         nome = self.nivel["nome"]
-        for texto, fonte, cor, y in [(f"FASE {self.numero_fase}", self.fonte, COR_OURO, 298),
+        rotulo = (f"PERSEGUIÇÃO - MAPA {self.numero_fase}" if self.perseguicao is not None
+                  else f"FASE {self.numero_fase}")
+        for texto, fonte, cor, y in [(rotulo, self.fonte, COR_OURO, 298),
                                      (nome, self.fonte_titulo, COR_TEXTO, 334)]:
             imagem = fonte.render(texto, True, cor)
             imagem.set_alpha(int(255 * fator))
@@ -624,13 +676,19 @@ class Jogo:
         if self.estado == ESTADO_MENU:
             self.menu_principal.desenhar(self.tela, self.fonte_botao, self.tempo_menu)
             dica = "Setas ou mouse para escolher  -  ENTER para confirmar"
+        elif self.estado == ESTADO_DIFICULDADE:
+            desenhar_texto_contorno(self.tela, self.fonte, "ESCOLHA A DIFICULDADE",
+                                    COR_OURO, (meio, 244))
+            self.menu_dificuldade.desenhar(self.tela, self.fonte_botao, self.tempo_menu,
+                                           self.fonte_pequena)
+            dica = "Muda só as vidas iniciais. Setas ou mouse  -  ENTER confirma  -  ESC volta"
         else:
             desenhar_texto_contorno(self.tela, self.fonte, "Escolha o modo de jogo",
                                     COR_OURO, (meio, 262))
             self.menu_modos.desenhar(self.tela, self.fonte_botao, self.tempo_menu)
             descricoes = ["As 5 fases fixas, terminando no covil do Dragão.",
                           "Fases aleatórias sem fim. Até onde você chega?",
-                          "Fuja do Guardião das Trevas, use o Santuário e escape com a chave!",
+                          "Fuja do Guardião das Trevas, compre melhorias e escape.",
                           "Voltar ao menu principal."]
             dica = descricoes[self.menu_modos.selecionado]
         desenhar_texto_contorno(self.tela, self.fonte_pequena, dica, COR_TEXTO,
@@ -671,6 +729,8 @@ class Jogo:
                 self.desenhar_texto(
                     f"Você chegou à fase {self.numero_fase}  |  Recorde: fase {self.recorde_fase}",
                     self.fonte, COR_TEXTO, (centro, 372), centralizar=True)
+            elif self.perseguicao is not None:
+                self.perseguicao.desenhar_estatisticas(self)
             self.menu_fim.desenhar(self.tela, self.fonte_botao, self.tempo_fim)
             self.desenhar_texto("R: jogar novamente   |   M ou ESC: voltar ao menu",
                                 self.fonte_pequena, COR_TEXTO, (centro, 590),
@@ -698,7 +758,7 @@ class Jogo:
 
 
 def main():
-    # O modo (campanha, infinito ou perseguição) é escolhido no menu inicial
+    # O modo (campanha ou infinito) é escolhido no menu inicial
     Jogo().executar()
 
 

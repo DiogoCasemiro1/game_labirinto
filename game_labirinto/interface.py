@@ -67,10 +67,11 @@ def desenhar_painel(tela, retangulo, alfa=215):
 # Botões e menus
 # ----------------------------------------------------------------------
 class Botao:
-    def __init__(self, texto, acao, retangulo):
+    def __init__(self, texto, acao, retangulo, subtitulo=""):
         self.texto = texto
         self.acao = acao              # texto que identifica o que o botão faz
         self.retangulo = retangulo
+        self.subtitulo = subtitulo    # linha pequena opcional sob o texto (ex.: "5 VIDAS")
 
 
 class MenuVertical:
@@ -78,10 +79,12 @@ class MenuVertical:
 
     def __init__(self, opcoes, centro_x, y_inicial, largura=360, altura=52, espaco=16):
         self.botoes = []
-        for i, (texto, acao) in enumerate(opcoes):
+        for i, opcao in enumerate(opcoes):
+            texto, acao = opcao[0], opcao[1]
+            subtitulo = opcao[2] if len(opcao) > 2 else ""     # (texto, acao[, subtitulo])
             retangulo = pygame.Rect(0, 0, largura, altura)
             retangulo.center = (centro_x, y_inicial + altura // 2 + i * (altura + espaco))
-            self.botoes.append(Botao(texto, acao, retangulo))
+            self.botoes.append(Botao(texto, acao, retangulo, subtitulo))
         self.selecionado = 0
 
     def mover(self, delta):
@@ -105,7 +108,7 @@ class MenuVertical:
                 return botao.acao
         return None
 
-    def desenhar(self, tela, fonte, tempo):
+    def desenhar(self, tela, fonte, tempo, fonte_sub=None):
         for i, botao in enumerate(self.botoes):
             ativo = i == self.selecionado
             r = botao.retangulo
@@ -121,7 +124,12 @@ class MenuVertical:
                 desenhar_tocha(tela, r.left - 28, r.centery + 4, tempo, i)           # tochas laterais
                 desenhar_tocha(tela, r.right + 28, r.centery + 4, tempo, i + 3)
             cor = (255, 240, 180) if ativo else COR_TEXTO
-            desenhar_texto_contorno(tela, fonte, botao.texto, cor, r.center)
+            if botao.subtitulo and fonte_sub is not None:
+                desenhar_texto_contorno(tela, fonte, botao.texto, cor, (r.centerx, r.centery - 11))
+                desenhar_texto_contorno(tela, fonte_sub, botao.subtitulo, COR_OURO,
+                                        (r.centerx, r.centery + 16), (10, 8, 14), 1)
+            else:
+                desenhar_texto_contorno(tela, fonte, botao.texto, cor, r.center)
 
 
 # ----------------------------------------------------------------------
@@ -269,24 +277,24 @@ def desenhar_instrucoes(tela, fonte_titulo, fonte_secao, fonte_texto, tempo):
         ("texto", "Tocar num monstro ou deixar o tempo acabar custa 1 vida (são 3)"),
         ("secao", "MODOS DE JOGO"),
         ("texto", "Campanha: 5 fases fixas, terminando no covil do Dragão"),
-        ("texto", "Infinito: fases aleatórias sem fim; vencer um chefe dá +1 vida"),
-        ("texto", "Perseguição: fuja do Guardião, compre no Santuário (E) e use itens (1-5)"),
+        ("texto", "Infinito: fases sem fim (escolha Fácil, Médio ou Difícil); chefe dá +1 vida"),
+        ("texto", "Perseguição: fuja do Guardião; E abre o santuário; teclas 1 a 5 usam itens"),
     ]
     y = 112
     for linha in linhas:
         if linha[0] == "secao":
             y += 4
             desenhar_texto_contorno(tela, fonte_secao, linha[1], COR_OURO, (LARGURA_JANELA // 2, y + 10))
-            y += 28
+            y += 26
         elif linha[0] == "texto":
             desenhar_texto_contorno(tela, fonte_texto, linha[1], COR_TEXTO,
                                     (LARGURA_JANELA // 2, y + 10), (10, 8, 14), 1)
-            y += 28
+            y += 26
         else:
             linha[1](130, y + 10)
             imagem = _texto_com_contorno(fonte_texto, linha[2], COR_TEXTO, (10, 8, 14), 1)
             tela.blit(imagem, imagem.get_rect(midleft=(170, y + 10)))
-            y += 28
+            y += 26
     alfa = int(150 + 105 * (math.sin(tempo * 3) + 1) / 2)
     desenhar_texto_contorno(tela, fonte_texto, "ENTER, ESPAÇO ou ESC para voltar", COR_OURO,
                             (LARGURA_JANELA // 2, 588), (10, 8, 14), 1, alfa)

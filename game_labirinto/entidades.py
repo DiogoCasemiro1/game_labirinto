@@ -277,7 +277,8 @@ class Jogador:
         self.direcao = "baixo"
         self.andando = False
         self.tempo_animacao = 0.0
-        self.fator_velocidade = 1.0   # usado só pelo modo Perseguição (poções/espinhos)
+        self.fator_velocidade = 1.0   # multiplicador de velocidade (poção do modo Perseguição)
+        self.bloqueado = False        # True: ignora o teclado (loja aberta no modo Perseguição)
 
     @property
     def invulneravel(self):
@@ -322,7 +323,7 @@ class Jogador:
             self.invulneravel_restante = max(0.0, self.invulneravel_restante - dt)
         self.tempo_animacao += dt
 
-        dx, dy = self.ler_teclado()
+        dx, dy = (0, 0) if self.bloqueado else self.ler_teclado()
         self.andando = (dx != 0 or dy != 0)
         if not self.andando:
             return
